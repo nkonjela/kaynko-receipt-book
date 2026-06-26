@@ -1,7 +1,7 @@
 import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 
-export const config = { runtime: 'edge', maxDuration: 10 }
+export const config = { runtime: 'nodejs', maxDuration: 10 }
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST') {

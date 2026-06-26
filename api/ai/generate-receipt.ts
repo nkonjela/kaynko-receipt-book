@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 
-export const config = { runtime: 'edge', maxDuration: 30 }
+export const config = { runtime: 'nodejs', maxDuration: 30 }
 
 const RECEIPT_ANALYSIS_SYSTEM_PROMPT = `You are an expert at analysing receipt and invoice layouts.
 When given an image of a receipt, analyse its layout and return ONLY valid JSON — no prose, no markdown fences.
