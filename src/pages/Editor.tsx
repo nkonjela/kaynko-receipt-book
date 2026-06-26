@@ -9,7 +9,7 @@ import {
   addImagePlaceholder, addBlankField,
   centrePos,
 } from '@/lib/canvas'
-import type { InitCanvasOptions } from '@/lib/canvas'
+import type { InitCanvasOptions, DimensionInfo } from '@/lib/canvas'
 import { exportPDF } from '@/lib/pdf'
 import { getPaperDimensions, getSlotDimensions } from '@/lib/paperSizes'
 import { generateNumbers } from '@/lib/numbering'
@@ -74,9 +74,12 @@ export default function Editor() {
   const [showTableConfig, setShowTableConfig] = useState(false)
   const [tableRows, setTableRows] = useState(3)
   const [tableCols, setTableCols] = useState(3)
+  const [tableCellWMm, setTableCellWMm] = useState(30)
+  const [tableCellHMm, setTableCellHMm] = useState(10)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [draggingGuide, setDraggingGuide] = useState<{ axis: 'h' | 'v'; screenPos: number } | null>(null)
   const [userGuides, setUserGuides] = useState<{ axis: 'h' | 'v'; positionMm: number }[]>([])
+  const [dimTooltip, setDimTooltip] = useState<DimensionInfo | null>(null)
 
   const designStore = useDesignStore()
   const numberingStore = useNumberingStore()
@@ -128,6 +131,7 @@ export default function Editor() {
       showGrid: designStore.showGrid,
       gridSizeMm: designStore.gridSizeMm,
       userGuides,
+      onDimensions: (info) => setDimTooltip(info),
     }
 
     const canvas = initCanvas(el, paperSize, orientation, designStore.customSize, receiptsPerPage, opts)
@@ -484,16 +488,21 @@ export default function Editor() {
             <div className="relative mt-1">
               <button type="button" onClick={() => setShowTableConfig((v) => !v)} className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-krb-bg text-xs">⊞  Table</button>
               {showTableConfig && (
-                <div className="absolute left-0 top-full mt-1 bg-white border border-krb-rule rounded-xl shadow-xl p-3 z-50 w-44">
-                  <p className="text-xs font-semibold text-krb-ink3 mb-2">Table size</p>
-                  <div className="flex gap-2 mb-2">
-                    <div className="flex-1"><label className="text-xs text-krb-ink3 block mb-0.5">Rows</label>
+                <div className="absolute left-0 top-full mt-1 bg-white border border-krb-rule rounded-xl shadow-xl p-3 z-50 w-48">
+                  <p className="text-xs font-semibold text-krb-ink3 mb-2">Table</p>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <div><label className="text-xs text-krb-ink3 block mb-0.5">Rows</label>
                       <input type="number" min={1} max={20} value={tableRows} title="Rows" onChange={(e) => setTableRows(Number(e.target.value))} className="w-full border border-krb-rule rounded px-2 py-1 text-xs focus:outline-none" /></div>
-                    <div className="flex-1"><label className="text-xs text-krb-ink3 block mb-0.5">Cols</label>
+                    <div><label className="text-xs text-krb-ink3 block mb-0.5">Cols</label>
                       <input type="number" min={1} max={20} value={tableCols} title="Cols" onChange={(e) => setTableCols(Number(e.target.value))} className="w-full border border-krb-rule rounded px-2 py-1 text-xs focus:outline-none" /></div>
+                    <div><label className="text-xs text-krb-ink3 block mb-0.5">Cell W (mm)</label>
+                      <input type="number" min={10} max={120} value={tableCellWMm} title="Cell width mm" onChange={(e) => setTableCellWMm(Number(e.target.value))} className="w-full border border-krb-rule rounded px-2 py-1 text-xs focus:outline-none" /></div>
+                    <div><label className="text-xs text-krb-ink3 block mb-0.5">Cell H (mm)</label>
+                      <input type="number" min={5} max={60} value={tableCellHMm} title="Cell height mm" onChange={(e) => setTableCellHMm(Number(e.target.value))} className="w-full border border-krb-rule rounded px-2 py-1 text-xs focus:outline-none" /></div>
                   </div>
+                  <p className="text-xs text-krb-ink3 mb-2">Row 1 = header. Double-click a cell to type.</p>
                   <button type="button"
-                    onClick={() => { if (fabricCanvasRef.current) addTable(fabricCanvasRef.current, tableRows, tableCols); setShowTableConfig(false) }}
+                    onClick={() => { if (fabricCanvasRef.current) addTable(fabricCanvasRef.current, tableRows, tableCols, tableCellWMm, tableCellHMm); setShowTableConfig(false) }}
                     className="w-full bg-krb-orange text-white rounded-lg py-1.5 text-xs font-semibold">Insert Table</button>
                 </div>
               )}
@@ -653,6 +662,11 @@ export default function Editor() {
             <div style={{ position: 'absolute', left: paperLeft, top: paperTop, width: paperDisplayW, height: paperDisplayH, background: designStore.pageBackgroundColor, boxShadow: '0 4px 20px rgba(0,0,0,0.18),0 1px 4px rgba(0,0,0,0.12)', zIndex: 0, pointerEvents: 'none' }} />
             <canvas ref={canvasElRef} />
             {guidePreviewStyle && <div style={guidePreviewStyle} />}
+            {dimTooltip && (
+              <div style={{ position: 'absolute', left: dimTooltip.x, top: dimTooltip.y, zIndex: 30, background: 'rgba(30,30,30,0.85)', color: '#fff', fontSize: 11, fontFamily: 'monospace', padding: '2px 8px', borderRadius: 4, pointerEvents: 'none', whiteSpace: 'nowrap' }}>
+                {dimTooltip.label}
+              </div>
+            )}
             <ZoomControls
               zoom={zoom}
               onZoomIn={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() * 1.2)}

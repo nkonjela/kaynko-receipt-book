@@ -289,6 +289,12 @@ function drawUserGuides(
   ctx.restore()
 }
 
+export interface DimensionInfo {
+  x: number
+  y: number
+  label: string
+}
+
 export interface InitCanvasOptions {
   bindingSide?: BindingSide
   bindingType?: BindingType
@@ -296,6 +302,17 @@ export interface InitCanvasOptions {
   showGrid?: boolean
   gridSizeMm?: number
   userGuides?: UserGuide[]
+  onDimensions?: (info: DimensionInfo | null) => void
+}
+
+function fireDimensions(obj: FabricObject, canvas: Canvas, cb?: (info: DimensionInfo | null) => void) {
+  if (!cb) return
+  const wMm = ((obj.width ?? 0) * (obj.scaleX ?? 1) / (96 / 25.4)).toFixed(1)
+  const hMm = ((obj.height ?? 0) * (obj.scaleY ?? 1) / (96 / 25.4)).toFixed(1)
+  const vt = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]
+  const screenX = (obj.left ?? 0) * vt[0] + vt[4] + (obj.width ?? 0) * (obj.scaleX ?? 1) * vt[0] + 10
+  const screenY = (obj.top ?? 0) * vt[3] + vt[5]
+  cb({ label: `${wMm} × ${hMm} mm`, x: screenX, y: screenY })
 }
 
 export function initCanvas(
@@ -349,15 +366,39 @@ export function initCanvas(
       })
     }
 
-    // Smart guides (override grid snap near snap points; also shows centre crosshair)
+    // Smart guides (override grid snap near snap points)
     const others = canvas.getObjects().filter((o: FabricObject) => o !== obj)
     const result = computeGuides(obj, others, pw, ph, data?.userGuides ?? [])
     obj.set({ left: result.left, top: result.top })
     activeGuides = result.guides
+
+    // Dimension tooltip
+    fireDimensions(obj, canvas, options?.onDimensions)
   })
 
-  canvas.on('object:modified', () => { activeGuides = []; canvas.requestRenderAll() })
+  canvas.on('object:scaling', (e) => {
+    if (e.target) fireDimensions(e.target, canvas, options?.onDimensions)
+  })
+
+  canvas.on('object:modified', () => {
+    activeGuides = []
+    options?.onDimensions?.(null)
+    canvas.requestRenderAll()
+  })
   canvas.on('selection:cleared', () => { activeGuides = []; canvas.requestRenderAll() })
+
+  canvas.on('mouse:dblclick', (e) => {
+    const target = e.target
+    if (!target || target.type !== 'group') return
+    const ev = e as unknown as { subTargets?: FabricObject[] }
+    const cell = ev.subTargets?.[0]
+    if (cell && cell.type === 'textbox') {
+      canvas.setActiveObject(cell)
+      ;(cell as Textbox).enterEditing()
+      ;(cell as Textbox).selectAll()
+      canvas.requestRenderAll()
+    }
+  })
 
   canvas.on('after:render', ({ ctx }: { ctx: CanvasRenderingContext2D }) => {
     const data = (canvas as AnnotatedCanvas).data
@@ -513,18 +554,20 @@ export function addArrow(canvas: Canvas): Group {
   return group
 }
 
-export function addTable(canvas: Canvas, rows: number, cols: number): Group {
-  const cellW = 60
-  const cellH = 25
+export function addTable(canvas: Canvas, rows: number, cols: number, cellWMm = 30, cellHMm = 10): Group {
+  const PX = 96 / 25.4
+  const cellW = Math.round(cellWMm * PX)
+  const cellH = Math.round(cellHMm * PX)
   const totalW = cols * cellW
   const totalH = rows * cellH
 
   const items: FabricObject[] = []
 
+  // White background + outer border
   items.push(new Rect({
     width: totalW,
     height: totalH,
-    fill: 'transparent',
+    fill: '#ffffff',
     stroke: '#1A1A1A',
     strokeWidth: 1,
     originX: 'center',
@@ -533,6 +576,7 @@ export function addTable(canvas: Canvas, rows: number, cols: number): Group {
     evented: false,
   }))
 
+  // Row separator lines
   for (let r = 1; r < rows; r++) {
     const y = r * cellH - totalH / 2
     items.push(new Line([-totalW / 2, y, totalW / 2, y], {
@@ -543,6 +587,7 @@ export function addTable(canvas: Canvas, rows: number, cols: number): Group {
     }))
   }
 
+  // Column separator lines
   for (let c = 1; c < cols; c++) {
     const x = c * cellW - totalW / 2
     items.push(new Line([x, -totalH / 2, x, totalH / 2], {
@@ -553,8 +598,38 @@ export function addTable(canvas: Canvas, rows: number, cols: number): Group {
     }))
   }
 
-  const group = new Group(items, { ...centrePos(canvas, totalW, totalH) })
-  Object.assign(group, { data: { type: 'table', rows, cols } })
+  // One editable Textbox per cell
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = c * cellW - totalW / 2 + 3
+      const y = r * cellH - totalH / 2 + 2
+      items.push(new Textbox('', {
+        left: x,
+        top: y,
+        width: cellW - 6,
+        height: cellH - 4,
+        fontSize: r === 0 ? 10 : 9,
+        fontWeight: r === 0 ? 'bold' : 'normal',
+        fill: '#1A1A1A',
+        fontFamily: 'Arial, sans-serif',
+        textAlign: 'left',
+        editable: true,
+        lockMovementX: true,
+        lockMovementY: true,
+        lockScalingX: true,
+        lockScalingY: true,
+        hasControls: false,
+        hasBorders: false,
+        padding: 1,
+      }))
+    }
+  }
+
+  const group = new Group(items, {
+    ...centrePos(canvas, totalW, totalH),
+    subTargetCheck: true,
+  })
+  Object.assign(group, { data: { type: 'table', rows, cols, cellWMm, cellHMm } })
   canvas.add(group)
   canvas.setActiveObject(group)
   canvas.requestRenderAll()
