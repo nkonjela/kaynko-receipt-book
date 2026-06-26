@@ -3,13 +3,12 @@ import type { FabricObject } from 'fabric'
 import { getPaperDimensions, getSlotDimensions } from '@/lib/paperSizes'
 import type { ReceiptsPerPage } from '@/lib/paperSizes'
 import { computeGuides, drawGuides } from '@/lib/guides'
-import type { GuideLineSpec } from '@/lib/guides'
-import type { PaperSizeName, Orientation, CustomSize, PerforationLine, BindingSide } from '@/store/designStore'
+import type { GuideLineSpec, UserGuide } from '@/lib/guides'
+import type { PaperSizeName, Orientation, CustomSize, PerforationLine, BindingSide, BindingType } from '@/store/designStore'
 
 export const SCHEMA_VERSION = 1
-const SNAP_SIZE = 10
-const MIN_ZOOM = 0.1
-const MAX_ZOOM = 4.0
+const MIN_ZOOM = 0.05
+const MAX_ZOOM = 8.0
 
 export interface KRBCanvasData {
   schemaVersion: number
@@ -18,7 +17,11 @@ export interface KRBCanvasData {
   paperWidthPx: number
   paperHeightPx: number
   bindingSide: BindingSide
+  bindingType: BindingType
   perforationLines: PerforationLine[]
+  showGrid: boolean
+  gridSizeMm: number
+  userGuides: UserGuide[]
 }
 
 type AnnotatedCanvas = Canvas & { data: KRBCanvasData }
@@ -44,9 +47,7 @@ export function fitToViewport(canvas: Canvas, containerW: number, containerH: nu
   const data = (canvas as AnnotatedCanvas).data
   const paperW = data?.paperWidthPx ?? canvas.width
   const paperH = data?.paperHeightPx ?? canvas.height
-  // Resize the HTML canvas element to fill the container (removes scrollbars)
   canvas.setDimensions({ width: containerW, height: containerH })
-  // Scale paper to fit with ~10% padding on each side
   const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM,
     Math.min((containerW * 0.88) / paperW, (containerH * 0.88) / paperH)))
   const offsetX = (containerW - paperW * z) / 2
@@ -60,18 +61,21 @@ export function updateCanvasData(canvas: Canvas, updates: Partial<KRBCanvasData>
   canvas.requestRenderAll()
 }
 
-export function attachZoomPan(canvas: Canvas): () => void {
-  const wrapper = canvas.wrapperEl as HTMLElement
+// Zoom on scroll (no modifier needed — matches CorelDraw/Affinity behaviour).
+// Space+drag or middle-click+drag pans. containerEl should be canvasAreaRef.
+export function attachZoomPan(canvas: Canvas, containerEl: HTMLElement): () => void {
   let isPanning = false
   let panStart = { x: 0, y: 0 }
 
   function onWheel(e: WheelEvent) {
-    if (!e.ctrlKey) return
     e.preventDefault()
     e.stopPropagation()
     const delta = e.deltaY
     const zoom = canvas.getZoom() * (0.999 ** delta)
-    applyZoom(canvas, zoom, new Point(e.offsetX, e.offsetY))
+    const rect = containerEl.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    applyZoom(canvas, zoom, new Point(x, y))
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -81,6 +85,7 @@ export function attachZoomPan(canvas: Canvas): () => void {
       isPanning = true
       canvas.defaultCursor = 'grab'
       canvas.selection = false
+      e.preventDefault()
     }
   }
 
@@ -114,18 +119,18 @@ export function attachZoomPan(canvas: Canvas): () => void {
     else canvas.defaultCursor = 'default'
   }
 
-  wrapper.addEventListener('wheel', onWheel, { passive: false })
-  wrapper.addEventListener('mousedown', onMouseDown)
-  wrapper.addEventListener('mousemove', onMouseMove)
-  wrapper.addEventListener('mouseup', onMouseUp)
+  containerEl.addEventListener('wheel', onWheel, { passive: false })
+  containerEl.addEventListener('mousedown', onMouseDown)
+  containerEl.addEventListener('mousemove', onMouseMove)
+  containerEl.addEventListener('mouseup', onMouseUp)
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', onKeyUp)
 
   return () => {
-    wrapper.removeEventListener('wheel', onWheel)
-    wrapper.removeEventListener('mousedown', onMouseDown)
-    wrapper.removeEventListener('mousemove', onMouseMove)
-    wrapper.removeEventListener('mouseup', onMouseUp)
+    containerEl.removeEventListener('wheel', onWheel)
+    containerEl.removeEventListener('mousedown', onMouseDown)
+    containerEl.removeEventListener('mousemove', onMouseMove)
+    containerEl.removeEventListener('mouseup', onMouseUp)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('keyup', onKeyUp)
   }
@@ -137,20 +142,35 @@ function drawBindingEdge(
   paperW: number,
   paperH: number,
   side: BindingSide,
+  bindingType: BindingType,
 ): void {
+  if (bindingType === 'none') return
   ctx.save()
   ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
   const z = vt[0] || 1
-  const stripe = 10 / z
+  const stripe = 12 / z
 
-  ctx.fillStyle = 'rgba(26,58,92,0.10)'
+  // Fill stripe
+  ctx.fillStyle = 'rgba(26,58,92,0.18)'
   if (side === 'left') ctx.fillRect(0, 0, stripe, paperH)
   else if (side === 'right') ctx.fillRect(paperW - stripe, 0, stripe, paperH)
   else if (side === 'top') ctx.fillRect(0, 0, paperW, stripe)
   else ctx.fillRect(0, paperH - stripe, paperW, stripe)
 
-  ctx.fillStyle = 'rgba(26,58,92,0.45)'
-  ctx.font = `bold ${8 / z}px Arial`
+  // Solid border line on the binding edge
+  ctx.strokeStyle = 'rgba(26,58,92,0.55)'
+  ctx.lineWidth = 1.5 / z
+  ctx.setLineDash([])
+  ctx.beginPath()
+  if (side === 'left') { ctx.moveTo(stripe, 0); ctx.lineTo(stripe, paperH) }
+  else if (side === 'right') { ctx.moveTo(paperW - stripe, 0); ctx.lineTo(paperW - stripe, paperH) }
+  else if (side === 'top') { ctx.moveTo(0, stripe); ctx.lineTo(paperW, stripe) }
+  else { ctx.moveTo(0, paperH - stripe); ctx.lineTo(paperW, paperH - stripe) }
+  ctx.stroke()
+
+  // Label text
+  ctx.fillStyle = 'rgba(26,58,92,0.65)'
+  ctx.font = `bold ${10 / z}px Arial`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
 
@@ -219,13 +239,72 @@ function drawPerforations(
   ctx.restore()
 }
 
+function drawGrid(
+  ctx: CanvasRenderingContext2D,
+  vt: number[],
+  paperW: number,
+  paperH: number,
+  gridSizeMm: number,
+): void {
+  const gridSizePx = gridSizeMm * (96 / 25.4)
+  ctx.save()
+  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
+  const z = vt[0] || 1
+  ctx.strokeStyle = 'rgba(160,170,200,0.45)'
+  ctx.lineWidth = 0.5 / z
+  ctx.setLineDash([])
+  for (let x = 0; x <= paperW + gridSizePx; x += gridSizePx) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, paperH); ctx.stroke()
+  }
+  for (let y = 0; y <= paperH + gridSizePx; y += gridSizePx) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(paperW, y); ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function drawUserGuides(
+  ctx: CanvasRenderingContext2D,
+  vt: number[],
+  paperW: number,
+  paperH: number,
+  guides: UserGuide[],
+): void {
+  if (guides.length === 0) return
+  ctx.save()
+  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
+  const z = vt[0] || 1
+  ctx.strokeStyle = 'rgba(0,110,200,0.65)'
+  ctx.lineWidth = 0.75 / z
+  ctx.setLineDash([])
+  for (const g of guides) {
+    const posPx = g.positionMm * (96 / 25.4)
+    ctx.beginPath()
+    if (g.axis === 'v') {
+      ctx.moveTo(posPx, 0); ctx.lineTo(posPx, paperH)
+    } else {
+      ctx.moveTo(0, posPx); ctx.lineTo(paperW, posPx)
+    }
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+export interface InitCanvasOptions {
+  bindingSide?: BindingSide
+  bindingType?: BindingType
+  perforationLines?: PerforationLine[]
+  showGrid?: boolean
+  gridSizeMm?: number
+  userGuides?: UserGuide[]
+}
+
 export function initCanvas(
   el: HTMLCanvasElement,
   paperSize: PaperSizeName,
   orientation: Orientation,
   customSize?: CustomSize | null,
   receiptsPerPage?: ReceiptsPerPage,
-  options?: { bindingSide?: BindingSide; perforationLines?: PerforationLine[] },
+  options?: InitCanvasOptions,
 ): Canvas {
   const dims = receiptsPerPage && receiptsPerPage > 1
     ? getSlotDimensions(paperSize, orientation, receiptsPerPage, customSize)
@@ -245,7 +324,11 @@ export function initCanvas(
     paperWidthPx: dims.widthPx96,
     paperHeightPx: dims.heightPx96,
     bindingSide: options?.bindingSide ?? 'bottom',
+    bindingType: options?.bindingType ?? 'none',
     perforationLines: options?.perforationLines ?? [],
+    showGrid: options?.showGrid ?? false,
+    gridSizeMm: options?.gridSizeMm ?? 5,
+    userGuides: options?.userGuides ?? [],
   }
 
   let activeGuides: GuideLineSpec[] = []
@@ -257,14 +340,18 @@ export function initCanvas(
     const pw = data?.paperWidthPx ?? canvas.width
     const ph = data?.paperHeightPx ?? canvas.height
 
-    // Grid snap
-    obj.set({
-      left: Math.round((obj.left ?? 0) / SNAP_SIZE) * SNAP_SIZE,
-      top: Math.round((obj.top ?? 0) / SNAP_SIZE) * SNAP_SIZE,
-    })
-    // Smart guides override grid snap near snap points
+    // Grid snap (if grid is visible and snap enabled)
+    if (data?.showGrid) {
+      const gridPx = (data.gridSizeMm ?? 5) * (96 / 25.4)
+      obj.set({
+        left: Math.round((obj.left ?? 0) / gridPx) * gridPx,
+        top: Math.round((obj.top ?? 0) / gridPx) * gridPx,
+      })
+    }
+
+    // Smart guides (override grid snap near snap points; also shows centre crosshair)
     const others = canvas.getObjects().filter((o: FabricObject) => o !== obj)
-    const result = computeGuides(obj, others, pw, ph)
+    const result = computeGuides(obj, others, pw, ph, data?.userGuides ?? [])
     obj.set({ left: result.left, top: result.top })
     activeGuides = result.guides
   })
@@ -278,11 +365,11 @@ export function initCanvas(
     const pw = data?.paperWidthPx ?? canvas.width
     const ph = data?.paperHeightPx ?? canvas.height
 
-    if (activeGuides.length > 0) {
-      drawGuides(ctx, activeGuides, vt, pw, ph)
-    }
-    drawBindingEdge(ctx, vt, pw, ph, data?.bindingSide ?? 'bottom')
+    if (data?.showGrid) drawGrid(ctx, vt, pw, ph, data.gridSizeMm ?? 5)
+    if ((data?.userGuides ?? []).length > 0) drawUserGuides(ctx, vt, pw, ph, data.userGuides ?? [])
+    drawBindingEdge(ctx, vt, pw, ph, data?.bindingSide ?? 'bottom', data?.bindingType ?? 'none')
     drawPerforations(ctx, vt, pw, ph, data?.perforationLines ?? [])
+    if (activeGuides.length > 0) drawGuides(ctx, activeGuides, vt, pw, ph)
   })
 
   return canvas
@@ -376,6 +463,54 @@ export function addHighlight(canvas: Canvas): Rect {
   canvas.setActiveObject(r)
   canvas.requestRenderAll()
   return r
+}
+
+export function addRoundedRect(canvas: Canvas, rx = 10): Rect {
+  const r = new Rect({
+    width: 150,
+    height: 80,
+    rx,
+    ry: rx,
+    fill: '#E8E5E0',
+    stroke: '#1A1A1A',
+    strokeWidth: 0.5,
+    ...centrePos(canvas, 150, 80),
+  })
+  canvas.add(r)
+  canvas.setActiveObject(r)
+  canvas.requestRenderAll()
+  return r
+}
+
+export function addArrow(canvas: Canvas): Group {
+  const len = 120
+  const headSize = 14
+  const line = new Line([0, 0, len - headSize, 0], {
+    stroke: '#1A1A1A',
+    strokeWidth: 2,
+    originX: 'left',
+    originY: 'center',
+    selectable: false,
+    evented: false,
+  })
+  const head = new FabricText('▶', {
+    fontSize: headSize,
+    fill: '#1A1A1A',
+    originX: 'left',
+    originY: 'center',
+    left: len - headSize - 2,
+    top: 0,
+    selectable: false,
+    evented: false,
+  })
+  const group = new Group([line, head], {
+    ...centrePos(canvas, len, headSize),
+  })
+  Object.assign(group, { data: { type: 'arrow' } })
+  canvas.add(group)
+  canvas.setActiveObject(group)
+  canvas.requestRenderAll()
+  return group
 }
 
 export function addTable(canvas: Canvas, rows: number, cols: number): Group {

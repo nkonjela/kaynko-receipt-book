@@ -5,10 +5,11 @@ import { Textbox, Rect, Line, ActiveSelection } from 'fabric'
 import {
   initCanvas, serializeCanvas, loadCanvas, addNumberField,
   attachZoomPan, applyZoom, fitToViewport, updateCanvasData,
-  addCircle, addHighlight, addTable,
+  addCircle, addHighlight, addTable, addRoundedRect, addArrow,
   addImagePlaceholder, addBlankField,
   centrePos,
 } from '@/lib/canvas'
+import type { InitCanvasOptions } from '@/lib/canvas'
 import { exportPDF } from '@/lib/pdf'
 import { getPaperDimensions, getSlotDimensions } from '@/lib/paperSizes'
 import { generateNumbers } from '@/lib/numbering'
@@ -26,6 +27,26 @@ import ZoomControls from '@/components/Editor/ZoomControls'
 import LayersPanel from '@/components/Editor/LayersPanel'
 import { RulerH, RulerV } from '@/components/Editor/Ruler'
 import PreviewModal from '@/components/Editor/PreviewModal'
+
+function SidebarSection({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string
+  defaultOpen?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <details open={defaultOpen} className="border-t border-krb-rule group">
+      <summary className="py-2 px-1 text-xs font-semibold text-krb-ink3 uppercase tracking-wider cursor-pointer select-none list-none flex items-center justify-between hover:text-krb-ink transition-colors">
+        {title}
+        <span className="text-[9px] transition-transform group-open:rotate-180">▼</span>
+      </summary>
+      <div className="pb-3">{children}</div>
+    </details>
+  )
+}
 
 export default function Editor() {
   const { designId } = useParams()
@@ -54,6 +75,8 @@ export default function Editor() {
   const [tableRows, setTableRows] = useState(3)
   const [tableCols, setTableCols] = useState(3)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const [draggingGuide, setDraggingGuide] = useState<{ axis: 'h' | 'v'; screenPos: number } | null>(null)
+  const [userGuides, setUserGuides] = useState<{ axis: 'h' | 'v'; positionMm: number }[]>([])
 
   const designStore = useDesignStore()
   const numberingStore = useNumberingStore()
@@ -64,59 +87,66 @@ export default function Editor() {
   const orientation = designStore.orientation
   const receiptsPerPage = designStore.receiptsPerPage
   const twoUpOrientation = designStore.twoUpOrientation
-  const numbering = numberingStore
 
   useEffect(() => {
-    const handler = () => setIsMobile(window.innerWidth < 768)
-    window.addEventListener('resize', handler)
-    return () => window.removeEventListener('resize', handler)
+    const h = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener('resize', h)
+    return () => window.removeEventListener('resize', h)
   }, [])
 
-  // Sync perforation lines + binding side into canvas data whenever they change
   useEffect(() => {
     const canvas = fabricCanvasRef.current
     if (!canvas) return
     updateCanvasData(canvas, {
       perforationLines: designStore.perforationLines,
       bindingSide: designStore.bindingSide,
+      bindingType: designStore.bindingType,
     })
-  }, [designStore.perforationLines, designStore.bindingSide])
+  }, [designStore.perforationLines, designStore.bindingSide, designStore.bindingType])
 
-  // Init Fabric canvas
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+    updateCanvasData(canvas, { showGrid: designStore.showGrid, gridSizeMm: designStore.gridSizeMm })
+  }, [designStore.showGrid, designStore.gridSizeMm])
+
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+    updateCanvasData(canvas, { userGuides })
+  }, [userGuides])
+
   useEffect(() => {
     const el = canvasElRef.current
-    if (!el) return
+    const area = canvasAreaRef.current
+    if (!el || !area) return
 
-    const canvas = initCanvas(
-      el, paperSize, orientation, designStore.customSize, receiptsPerPage,
-      { bindingSide: designStore.bindingSide, perforationLines: designStore.perforationLines },
-    )
+    const opts: InitCanvasOptions = {
+      bindingSide: designStore.bindingSide,
+      bindingType: designStore.bindingType,
+      perforationLines: designStore.perforationLines,
+      showGrid: designStore.showGrid,
+      gridSizeMm: designStore.gridSizeMm,
+      userGuides,
+    }
+
+    const canvas = initCanvas(el, paperSize, orientation, designStore.customSize, receiptsPerPage, opts)
     fabricCanvasRef.current = canvas
     setFabricCanvas(canvas)
 
-    // Position .canvas-container to fill the canvas area
     const canvasContainer = el.parentElement
     if (canvasContainer) {
-      Object.assign(canvasContainer.style, {
-        position: 'absolute',
-        top: '0',
-        left: '0',
-        zIndex: '1',
-      })
+      Object.assign(canvasContainer.style, { position: 'absolute', top: '0', left: '0', zIndex: '1' })
     }
 
-    const cleanupZoomPan = attachZoomPan(canvas)
+    const cleanupZoomPan = attachZoomPan(canvas, area)
 
     canvas.on('after:render', () => {
       setZoom(canvas.getZoom())
       setViewportTransform([...(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0])])
     })
 
-    canvas.on('object:modified', () => {
-      const json = serializeCanvas(canvas)
-      designStore.pushHistory(json)
-    })
-
+    canvas.on('object:modified', () => { designStore.pushHistory(serializeCanvas(canvas)) })
     canvas.on('selection:created', () => setSelectedObj(canvas.getActiveObject() ?? null))
     canvas.on('selection:updated', () => setSelectedObj(canvas.getActiveObject() ?? null))
     canvas.on('selection:cleared', () => setSelectedObj(null))
@@ -134,11 +164,9 @@ export default function Editor() {
       }
     })
 
-    const wrapper = el.parentElement
     const preventCtx = (e: Event) => e.preventDefault()
-    wrapper?.addEventListener('contextmenu', preventCtx)
+    canvasContainer?.addEventListener('contextmenu', preventCtx)
 
-    // ResizeObserver: fit canvas to container whenever container size changes
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect
@@ -148,18 +176,14 @@ export default function Editor() {
         }
       }
     })
-    if (canvasAreaRef.current) ro.observe(canvasAreaRef.current)
+    ro.observe(area)
 
-    // Initial fit after layout settles
     requestAnimationFrame(() => {
-      const area = canvasAreaRef.current
-      if (area && area.offsetWidth > 0) {
-        fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
-      }
+      if (area.offsetWidth > 0) fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
     })
 
     return () => {
-      wrapper?.removeEventListener('contextmenu', preventCtx)
+      canvasContainer?.removeEventListener('contextmenu', preventCtx)
       ro.disconnect()
       cleanupZoomPan()
       canvas.dispose()
@@ -167,7 +191,6 @@ export default function Editor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Load existing design
   useEffect(() => {
     if (!designId || !fabricCanvas || !user) return
     supabase
@@ -179,16 +202,11 @@ export default function Editor() {
       .then(({ data }) => {
         if (!data) return
         designStore.setName(data['name'] as string)
-        if (data['canvas_json']) {
-          void loadCanvas(fabricCanvas, data['canvas_json'] as string)
-        }
-        if (data['numbering_config']) {
-          numberingStore.setConfig(data['numbering_config'] as Parameters<typeof numberingStore.setConfig>[0])
-        }
+        if (data['canvas_json']) void loadCanvas(fabricCanvas, data['canvas_json'] as string)
+        if (data['numbering_config']) numberingStore.setConfig(data['numbering_config'] as Parameters<typeof numberingStore.setConfig>[0])
       })
   }, [designId, fabricCanvas, user]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keyboard shortcuts
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       const active = document.activeElement
@@ -197,89 +215,48 @@ export default function Editor() {
       if (!canvas) return
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        const objs = canvas.getActiveObjects()
-        objs.forEach((o) => canvas.remove(o))
-        canvas.discardActiveObject()
-        canvas.requestRenderAll()
-        e.preventDefault()
-        return
+        canvas.getActiveObjects().forEach((o) => canvas.remove(o))
+        canvas.discardActiveObject(); canvas.requestRenderAll(); e.preventDefault(); return
       }
-
-      if (e.key === 'Escape') {
-        canvas.discardActiveObject()
-        canvas.requestRenderAll()
-        setContextMenu(null)
-        return
-      }
-
+      if (e.key === 'Escape') { canvas.discardActiveObject(); canvas.requestRenderAll(); setContextMenu(null); return }
       if (e.ctrlKey && e.key === 'd') {
         e.preventDefault()
         const obj = canvas.getActiveObject()
-        if (obj) {
-          void obj.clone().then((cloned: FabricObject) => {
-            cloned.set({ left: (obj.left ?? 0) + 10, top: (obj.top ?? 0) + 10 })
-            canvas.add(cloned)
-            canvas.setActiveObject(cloned)
-            canvas.requestRenderAll()
-          })
-        }
+        if (obj) void obj.clone().then((cloned: FabricObject) => {
+          cloned.set({ left: (obj.left ?? 0) + 10, top: (obj.top ?? 0) + 10 })
+          canvas.add(cloned); canvas.setActiveObject(cloned); canvas.requestRenderAll()
+        })
         return
       }
-
       if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault()
-        const json = useDesignStore.getState().undo()
-        if (json) void loadCanvas(canvas, json)
-        return
+        e.preventDefault(); const json = useDesignStore.getState().undo(); if (json) void loadCanvas(canvas, json); return
       }
-
       if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) {
-        e.preventDefault()
-        const json = useDesignStore.getState().redo()
-        if (json) void loadCanvas(canvas, json)
-        return
+        e.preventDefault(); const json = useDesignStore.getState().redo(); if (json) void loadCanvas(canvas, json); return
       }
-
       if (e.ctrlKey && e.key === 'a') {
         e.preventDefault()
         const all = canvas.getObjects()
-        if (all.length > 0) {
-          const sel = new ActiveSelection(all, { canvas })
-          canvas.setActiveObject(sel)
-          canvas.requestRenderAll()
-        }
+        if (all.length > 0) { const sel = new ActiveSelection(all, { canvas }); canvas.setActiveObject(sel); canvas.requestRenderAll() }
         return
       }
-
-      // Zoom shortcuts
-      if (e.ctrlKey && (e.key === '=' || e.key === '+')) {
-        e.preventDefault()
-        applyZoom(canvas, canvas.getZoom() * 1.2)
-        return
-      }
-      if (e.ctrlKey && e.key === '-') {
-        e.preventDefault()
-        applyZoom(canvas, canvas.getZoom() / 1.2)
-        return
-      }
+      if (e.ctrlKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); applyZoom(canvas, canvas.getZoom() * 1.2); return }
+      if (e.ctrlKey && e.key === '-') { e.preventDefault(); applyZoom(canvas, canvas.getZoom() / 1.2); return }
       if (e.ctrlKey && e.key === '0') {
         e.preventDefault()
         const area = canvasAreaRef.current
         if (area) fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
         return
       }
-
-      // Arrow nudge
       const obj = canvas.getActiveObject()
       if (obj) {
-        const nudge = e.shiftKey ? 10 : 1
-        if (e.key === 'ArrowLeft') { obj.set({ left: (obj.left ?? 0) - nudge }); canvas.requestRenderAll(); e.preventDefault() }
-        if (e.key === 'ArrowRight') { obj.set({ left: (obj.left ?? 0) + nudge }); canvas.requestRenderAll(); e.preventDefault() }
-        if (e.key === 'ArrowUp') { obj.set({ top: (obj.top ?? 0) - nudge }); canvas.requestRenderAll(); e.preventDefault() }
-        if (e.key === 'ArrowDown') { obj.set({ top: (obj.top ?? 0) + nudge }); canvas.requestRenderAll(); e.preventDefault() }
+        const n = e.shiftKey ? 10 : 1
+        if (e.key === 'ArrowLeft') { obj.set({ left: (obj.left ?? 0) - n }); canvas.requestRenderAll(); e.preventDefault() }
+        if (e.key === 'ArrowRight') { obj.set({ left: (obj.left ?? 0) + n }); canvas.requestRenderAll(); e.preventDefault() }
+        if (e.key === 'ArrowUp') { obj.set({ top: (obj.top ?? 0) - n }); canvas.requestRenderAll(); e.preventDefault() }
+        if (e.key === 'ArrowDown') { obj.set({ top: (obj.top ?? 0) + n }); canvas.requestRenderAll(); e.preventDefault() }
       }
     }
-
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [])
@@ -289,143 +266,125 @@ export default function Editor() {
     setSaving(true)
     const json = serializeCanvas(fabricCanvas)
     const payload = {
-      user_id: user.id,
-      name: designStore.name,
-      canvas_json: json,
-      paper_size: paperSize,
-      numbering_config: {
-        prefix: numbering.prefix,
-        start: numbering.start,
-        digits: numbering.digits,
-        step: numbering.step,
-        suffix: numbering.suffix,
-        total: numbering.total,
-      },
+      user_id: user.id, name: designStore.name, canvas_json: json, paper_size: paperSize,
+      numbering_config: { prefix: numberingStore.prefix, start: numberingStore.start, digits: numberingStore.digits, step: numberingStore.step, suffix: numberingStore.suffix, total: numberingStore.total },
     }
-
     if (designId) {
       await supabase.from('designs').update(payload).eq('id', designId)
     } else {
       const { data } = await supabase.from('designs').insert(payload).select('id').single()
       if (data?.['id']) navigate(`/editor/${data['id'] as string}`, { replace: true })
     }
-
-    setSaving(false)
-    setSaveMsg('Saved')
-    setTimeout(() => setSaveMsg(''), 2000)
-  }, [fabricCanvas, user, designId, designStore.name, paperSize, numbering, navigate])
-
-  async function handleExportPDF() {
-    if (!fabricCanvas) return
-    const maxPages = maxPagesForTier(tier)
-    const total = Math.min(numbering.total, maxPages)
-    const watermark = !canExportWithoutWatermark(tier)
-
-    const bytes = await exportPDF({
-      paperSize,
-      orientation,
-      bleedEnabled: designStore.bleedEnabled,
-      cropMarks: true,
-      watermark,
-      cmyk: false,
-      receiptsPerPage,
-      numberingEnabled: numberingStore.numberingEnabled,
-      twoUpOrientation,
-      perforationLines: designStore.perforationLines,
-      numbering: { ...numberingStore, total },
-      canvasObjects: fabricCanvas.getObjects().map((obj) => {
-        const o = obj as unknown as Record<string, unknown>
-        return {
-          type: String(o['type'] ?? 'rect'),
-          left: Number(obj.left ?? 0),
-          top: Number(obj.top ?? 0),
-          width: Number(obj.width ?? 0),
-          height: Number(obj.height ?? 0),
-          scaleX: Number(obj.scaleX ?? 1),
-          scaleY: Number(obj.scaleY ?? 1),
-          text: o['text'] as string | undefined,
-          fontSize: o['fontSize'] as number | undefined,
-          fill: o['fill'] as string | undefined,
-          data: o['data'] as { type?: string } | undefined,
-        }
-      }),
-    })
-
-    const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${designStore.name.replace(/\s+/g, '-')}.pdf`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
-  async function handleExportPNG() {
-    const canvas = fabricCanvasRef.current
-    if (!canvas) return
-    const dataUrl = canvas.toDataURL({ format: 'png', multiplier: 300 / 96 })
-    const a = document.createElement('a')
-    a.href = dataUrl
-    a.download = `${designStore.name.replace(/\s+/g, '-')}.png`
-    a.click()
-  }
+    setSaving(false); setSaveMsg('Saved'); setTimeout(() => setSaveMsg(''), 2000)
+  }, [fabricCanvas, user, designId, designStore.name, paperSize, numberingStore, navigate])
 
   async function handleExport() {
     setExporting(true)
     try {
-      if (exportFormat === 'png') await handleExportPNG()
-      else await handleExportPDF()
-    } finally {
-      setExporting(false)
-    }
+      if (exportFormat === 'png') {
+        const canvas = fabricCanvasRef.current; if (!canvas) return
+        const dataUrl = canvas.toDataURL({ format: 'png', multiplier: 300 / 96 })
+        const a = document.createElement('a'); a.href = dataUrl; a.download = `${designStore.name.replace(/\s+/g, '-')}.png`; a.click()
+      } else {
+        if (!fabricCanvas) return
+        const total = Math.min(numberingStore.total, maxPagesForTier(tier))
+        const bytes = await exportPDF({
+          paperSize, orientation, bleedEnabled: designStore.bleedEnabled, cropMarks: true,
+          watermark: !canExportWithoutWatermark(tier), cmyk: false, receiptsPerPage,
+          numberingEnabled: numberingStore.numberingEnabled, twoUpOrientation,
+          perforationLines: designStore.perforationLines, numbering: { ...numberingStore, total },
+          canvasObjects: fabricCanvas.getObjects().map((obj) => {
+            const o = obj as unknown as Record<string, unknown>
+            return { type: String(o['type'] ?? 'rect'), left: Number(obj.left ?? 0), top: Number(obj.top ?? 0), width: Number(obj.width ?? 0), height: Number(obj.height ?? 0), scaleX: Number(obj.scaleX ?? 1), scaleY: Number(obj.scaleY ?? 1), text: o['text'] as string | undefined, fontSize: o['fontSize'] as number | undefined, fill: o['fill'] as string | undefined, data: o['data'] as { type?: string } | undefined }
+          }),
+        })
+        const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a'); a.href = url; a.download = `${designStore.name.replace(/\s+/g, '-')}.pdf`; a.click()
+        URL.revokeObjectURL(url)
+      }
+    } finally { setExporting(false) }
   }
 
   function handlePageSetupConfirm(settings: PageSetupSettings) {
     const store = useDesignStore.getState()
-    store.setPaperSize(settings.paperSize)
-    store.setOrientation(settings.orientation)
-    store.setCustomSize(settings.customSize)
-    store.setBleedEnabled(settings.bleedEnabled)
-    store.setShowSafeZone(settings.showSafeZone)
-    store.setBindingType(settings.bindingType)
-    store.setBindingSide(settings.bindingSide)
-    store.setTwoUpOrientation(settings.twoUpOrientation)
-    store.setReceiptsPerPage(settings.receiptsPerPage)
-    setShowSetupDialog(false)
+    store.setPaperSize(settings.paperSize); store.setOrientation(settings.orientation)
+    store.setCustomSize(settings.customSize); store.setBleedEnabled(settings.bleedEnabled)
+    store.setShowSafeZone(settings.showSafeZone); store.setBindingType(settings.bindingType)
+    store.setBindingSide(settings.bindingSide); store.setTwoUpOrientation(settings.twoUpOrientation)
+    store.setReceiptsPerPage(settings.receiptsPerPage); setShowSetupDialog(false)
 
     const canvas = fabricCanvasRef.current
     if (canvas) {
       const dims = settings.receiptsPerPage > 1
         ? getSlotDimensions(settings.paperSize, settings.orientation, settings.receiptsPerPage, settings.customSize, settings.twoUpOrientation)
         : getPaperDimensions(settings.paperSize, settings.orientation, settings.customSize ?? undefined)
-      updateCanvasData(canvas, {
-        paperWidthPx: dims.widthPx96,
-        paperHeightPx: dims.heightPx96,
-        bindingSide: settings.bindingSide,
-      })
+      updateCanvasData(canvas, { paperWidthPx: dims.widthPx96, paperHeightPx: dims.heightPx96, bindingSide: settings.bindingSide, bindingType: settings.bindingType })
       const area = canvasAreaRef.current
       if (area) fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
     }
   }
 
-  // Add element helpers
-  function addText() {
+  // Guide drag
+  function handleGuideStart(axis: 'h' | 'v', e: React.MouseEvent) {
+    e.preventDefault()
+    const area = canvasAreaRef.current; if (!area) return
+    const rect = area.getBoundingClientRect()
+    const screenPos = axis === 'h' ? e.clientY - rect.top : e.clientX - rect.left
+    setDraggingGuide({ axis, screenPos })
+  }
+
+  function handleGuideMouseMove(e: React.MouseEvent) {
+    if (!draggingGuide) return
+    const area = canvasAreaRef.current; if (!area) return
+    const rect = area.getBoundingClientRect()
+    const screenPos = draggingGuide.axis === 'h' ? e.clientY - rect.top : e.clientX - rect.left
+    setDraggingGuide((g) => g ? { ...g, screenPos } : null)
+  }
+
+  function handleGuideMouseUp() {
+    if (!draggingGuide) return
     const canvas = fabricCanvasRef.current
-    if (!canvas) return
+    if (!canvas) { setDraggingGuide(null); return }
+    const vt = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]
+    const MM_TO_PX = 96 / 25.4
+    let positionMm: number
+    if (draggingGuide.axis === 'h') {
+      positionMm = (draggingGuide.screenPos - vt[5]) / (vt[3] || 1) / MM_TO_PX
+    } else {
+      positionMm = (draggingGuide.screenPos - vt[4]) / (vt[0] || 1) / MM_TO_PX
+    }
+    if (positionMm > 0) setUserGuides((prev) => [...prev, { axis: draggingGuide.axis, positionMm }])
+    setDraggingGuide(null)
+  }
+
+  function handleCanvasAreaDblClick(e: React.MouseEvent) {
+    const canvas = fabricCanvasRef.current; if (!canvas) return
+    const area = canvasAreaRef.current; if (!area) return
+    const rect = area.getBoundingClientRect()
+    const vt = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]
+    const MM_TO_PX = 96 / 25.4
+    const mx = ((e.clientX - rect.left) - vt[4]) / (vt[0] || 1) / MM_TO_PX
+    const my = ((e.clientY - rect.top) - vt[5]) / (vt[3] || 1) / MM_TO_PX
+    const T = 3
+    const remaining = userGuides.filter((g) => g.axis === 'h' ? Math.abs(g.positionMm - my) > T : Math.abs(g.positionMm - mx) > T)
+    if (remaining.length !== userGuides.length) setUserGuides(remaining)
+  }
+
+  function addText() {
+    const canvas = fabricCanvasRef.current; if (!canvas) return
     const t = new Textbox('Text here', { fontSize: 14, fill: '#1A1A1A', width: 150, ...centrePos(canvas, 150, 30) })
     canvas.add(t); canvas.setActiveObject(t); canvas.requestRenderAll()
   }
 
   function addRect() {
-    const canvas = fabricCanvasRef.current
-    if (!canvas) return
+    const canvas = fabricCanvasRef.current; if (!canvas) return
     const r = new Rect({ width: 150, height: 80, fill: '#E8E5E0', stroke: '#1A1A1A', strokeWidth: 0.5, ...centrePos(canvas, 150, 80) })
     canvas.add(r); canvas.setActiveObject(r); canvas.requestRenderAll()
   }
 
   function addLine() {
-    const canvas = fabricCanvasRef.current
-    if (!canvas) return
+    const canvas = fabricCanvasRef.current; if (!canvas) return
     const pos = centrePos(canvas, 200, 0)
     const l = new Line([0, 0, 200, 0], { left: pos.left, top: pos.top, stroke: '#1A1A1A', strokeWidth: 1 })
     canvas.add(l); canvas.setActiveObject(l); canvas.requestRenderAll()
@@ -435,30 +394,31 @@ export default function Editor() {
     ? getSlotDimensions(paperSize, orientation, receiptsPerPage, designStore.customSize, twoUpOrientation)
     : getPaperDimensions(paperSize, orientation, designStore.customSize)
 
-  const pdfPages = Math.ceil(numbering.total / receiptsPerPage)
-
-  // Numbering preview
+  const pdfPages = Math.ceil(numberingStore.total / receiptsPerPage)
   const numberingPreview = generateNumbers({ ...numberingStore, total: 3 }).join(', ')
 
-  // Paper background rect position (driven by viewport transform)
   const vt = viewportTransform
   const paperDisplayW = dims.widthPx96 * vt[0]
   const paperDisplayH = dims.heightPx96 * vt[3]
   const paperLeft = vt[4]
   const paperTop = vt[5]
 
-  // Ruler lengths (canvas area minus ruler thickness)
   const rulerW = Math.max(0, containerSize.w - 20)
   const rulerH = Math.max(0, containerSize.h - 20)
+
+  const guidePreviewStyle: React.CSSProperties | null = draggingGuide
+    ? draggingGuide.axis === 'h'
+      ? { position: 'absolute', left: 0, right: 0, top: draggingGuide.screenPos, height: 1, background: 'rgba(0,110,200,0.7)', pointerEvents: 'none', zIndex: 10 }
+      : { position: 'absolute', top: 0, bottom: 0, left: draggingGuide.screenPos, width: 1, background: 'rgba(0,110,200,0.7)', pointerEvents: 'none', zIndex: 10 }
+    : null
 
   if (isMobile) {
     return (
       <main className="min-h-screen bg-krb-bg flex items-center justify-center p-6 text-center">
         <div>
-          <div className="text-4xl mb-4">🖥️</div>
           <h2 className="text-xl font-bold text-krb-navy mb-2">Desktop only</h2>
-          <p className="text-krb-ink3 text-sm">The receipt editor works best on a desktop or laptop. Open it on a larger screen to start designing.</p>
-          <button type="button" onClick={() => navigate('/dashboard')} className="mt-6 text-sm text-krb-navy hover:underline">← Back to dashboard</button>
+          <p className="text-krb-ink3 text-sm">Open the editor on a desktop or laptop.</p>
+          <button type="button" onClick={() => navigate('/dashboard')} className="mt-6 text-sm text-krb-navy hover:underline">← Back</button>
         </div>
       </main>
     )
@@ -467,73 +427,27 @@ export default function Editor() {
   return (
     <main className="min-h-screen bg-krb-bg flex flex-col">
       {/* Toolbar */}
-      <header className="bg-white border-b border-krb-rule px-4 py-2 flex items-center gap-3">
+      <header className="bg-white border-b border-krb-rule px-4 py-2 flex items-center gap-3 shrink-0">
         <button type="button" onClick={() => navigate('/dashboard')} className="text-krb-ink3 hover:text-krb-ink text-sm">← Dashboard</button>
         <div className="w-px h-5 bg-krb-rule" />
-
-        <input
-          type="text"
-          title="Design name"
-          aria-label="Design name"
-          value={designStore.name}
+        <input type="text" title="Design name" aria-label="Design name" value={designStore.name}
           onChange={(e) => designStore.setName(e.target.value)}
-          className="text-sm font-semibold text-krb-navy bg-transparent border-b border-transparent hover:border-krb-rule focus:border-krb-navy focus:outline-none px-1 py-0.5 w-48"
-        />
-
+          className="text-sm font-semibold text-krb-navy bg-transparent border-b border-transparent hover:border-krb-rule focus:border-krb-navy focus:outline-none px-1 py-0.5 w-48" />
         <div className="flex-1" />
-
-        <button
-          type="button"
-          onClick={() => setShowSetupDialog(true)}
-          className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg flex items-center gap-1"
-          title="Page setup"
-        >
-          ⚙ Page
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setShowPreview(true)}
-          disabled={!fabricCanvas}
-          className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg flex items-center gap-1 disabled:opacity-40"
-          title="Preview full page layout"
-        >
-          ▣ Preview
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setShowAIDialog(true)}
-          className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg flex items-center gap-1.5"
-        >
-          ✨ AI Generate
-        </button>
-
-        <button
-          type="button"
-          onClick={saveDesign}
-          disabled={saving}
-          className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg disabled:opacity-50"
-        >
+        <button type="button" onClick={() => setShowSetupDialog(true)} className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg">⚙ Page</button>
+        <button type="button" onClick={() => setShowPreview(true)} disabled={!fabricCanvas} className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg disabled:opacity-40">▣ Preview</button>
+        <button type="button" onClick={() => setShowAIDialog(true)} className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg">✨ AI</button>
+        <button type="button" onClick={saveDesign} disabled={saving} className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg disabled:opacity-50">
           {saving ? 'Saving…' : saveMsg || 'Save'}
         </button>
-
         <div className="flex items-center gap-1">
-          <select
-            value={exportFormat}
-            onChange={(e) => setExportFormat(e.target.value as 'pdf' | 'png')}
-            title="Export format"
-            className="border border-krb-rule rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-krb-navy"
-          >
+          <select value={exportFormat} onChange={(e) => setExportFormat(e.target.value as 'pdf' | 'png')} title="Export format"
+            className="border border-krb-rule rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-krb-navy">
             <option value="pdf">PDF</option>
             <option value="png">PNG</option>
           </select>
-          <button
-            type="button"
-            onClick={handleExport}
-            disabled={exporting}
-            className="bg-krb-orange text-white rounded-lg px-4 py-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50"
-          >
+          <button type="button" onClick={handleExport} disabled={exporting}
+            className="bg-krb-orange text-white rounded-lg px-4 py-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50">
             {exporting ? 'Exporting…' : `Export ${exportFormat.toUpperCase()}`}
           </button>
         </div>
@@ -541,403 +455,242 @@ export default function Editor() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left sidebar */}
-        <aside className="w-52 bg-white border-r border-krb-rule flex flex-col p-3 shrink-0 overflow-y-auto">
+        <aside className="w-52 bg-white border-r border-krb-rule flex flex-col shrink-0 overflow-y-auto text-sm">
 
-          {/* Elements */}
-          <div className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider mb-2">Elements</div>
-
-          <button type="button" onClick={() => fabricCanvasRef.current && addNumberField(fabricCanvasRef.current)}
-            className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg border border-dashed border-blue-300 text-blue-700 font-medium mb-1">
-            + Number Field
-          </button>
-          <button type="button" onClick={addText} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Text</button>
-          <button type="button" onClick={addRect} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Rectangle</button>
-          <button type="button" onClick={() => fabricCanvasRef.current && addCircle(fabricCanvasRef.current)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Circle</button>
-          <button type="button" onClick={addLine} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Line</button>
-          <button type="button" onClick={() => fabricCanvasRef.current && addHighlight(fabricCanvasRef.current)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Highlight</button>
-          <button type="button" onClick={() => fabricCanvasRef.current && addImagePlaceholder(fabricCanvasRef.current)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Image placeholder</button>
-          <button type="button" onClick={() => fabricCanvasRef.current && addBlankField(fabricCanvasRef.current)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Blank field</button>
-
-          {/* Table button + inline config */}
-          <div className="relative mb-1">
-            <button type="button" onClick={() => setShowTableConfig((v) => !v)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Table</button>
-            {showTableConfig && (
-              <div className="absolute left-0 top-full mt-1 bg-white border border-krb-rule rounded-xl shadow-xl p-3 z-50 w-44">
-                <div className="text-xs font-semibold text-krb-ink3 mb-2">Table size</div>
-                <div className="flex gap-2 mb-2">
-                  <div className="flex-1">
-                    <label className="text-xs text-krb-ink3 block mb-0.5">Rows</label>
-                    <input type="number" min={1} max={20} value={tableRows}
-                      onChange={(e) => setTableRows(Number(e.target.value))}
-                      title="Table rows"
-                      className="w-full border border-krb-rule rounded px-2 py-1 text-sm focus:outline-none" />
-                  </div>
-                  <div className="flex-1">
-                    <label className="text-xs text-krb-ink3 block mb-0.5">Cols</label>
-                    <input type="number" min={1} max={20} value={tableCols}
-                      onChange={(e) => setTableCols(Number(e.target.value))}
-                      title="Table columns"
-                      className="w-full border border-krb-rule rounded px-2 py-1 text-sm focus:outline-none" />
-                  </div>
-                </div>
-                <button type="button"
-                  onClick={() => {
-                    if (fabricCanvasRef.current) addTable(fabricCanvasRef.current, tableRows, tableCols)
-                    setShowTableConfig(false)
-                  }}
-                  className="w-full bg-krb-orange text-white rounded-lg py-1.5 text-xs font-semibold">
-                  Insert Table
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div className="text-xs text-krb-ink3 mt-1 mb-3 px-1 leading-relaxed">
-            Del — delete · Ctrl+D — dup · Ctrl+scroll — zoom · Space+drag — pan
-          </div>
-
-          {/* Page */}
-          <div className="border-t border-krb-rule pt-3 mt-1">
-            <div className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider mb-2">Page</div>
-            <div className="text-xs text-krb-ink3 mb-1 leading-relaxed">
-              {paperSize} · {dims.widthMm.toFixed(0)} × {dims.heightMm.toFixed(0)} mm
-            </div>
-            {receiptsPerPage > 1 && (
-              <div className="text-xs text-krb-ink3 mb-1">
-                {receiptsPerPage}-up layout ({twoUpOrientation === 'h' ? 'side by side' : 'stacked'})
-              </div>
-            )}
-            <div className="text-xs text-krb-ink3 mb-2">
-              {numbering.total} receipts ÷ {receiptsPerPage}/page = <strong className="text-krb-ink">{pdfPages} PDF pages</strong>
-            </div>
-            <button type="button" onClick={() => setShowSetupDialog(true)}
-              className="w-full border border-krb-rule rounded-lg px-3 py-1.5 text-xs hover:bg-krb-bg mb-3">
-              ⚙ Change page setup
+          <SidebarSection title="Draw Tools" defaultOpen>
+            <button type="button" onClick={() => fabricCanvasRef.current && addNumberField(fabricCanvasRef.current)}
+              className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-krb-bg border border-dashed border-blue-300 text-blue-700 font-medium mb-1 text-xs">
+              # Number Field
             </button>
+            <button type="button" onClick={addText} className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-krb-bg text-xs">T  Text</button>
+            <button type="button" onClick={() => fabricCanvasRef.current && addImagePlaceholder(fabricCanvasRef.current)} className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-krb-bg text-xs">⬜  Image</button>
+            <button type="button" onClick={() => fabricCanvasRef.current && addBlankField(fabricCanvasRef.current)} className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-krb-bg text-xs">_  Blank field</button>
+          </SidebarSection>
 
-            <label className="flex items-center gap-2 text-sm cursor-pointer mb-2">
-              <input type="checkbox" checked={designStore.bleedEnabled}
-                onChange={(e) => designStore.setBleedEnabled(e.target.checked)} className="rounded" />
-              3 mm bleed
-            </label>
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input type="checkbox" checked={designStore.showSafeZone}
-                onChange={(e) => designStore.setShowSafeZone(e.target.checked)} className="rounded" />
-              Show safe zone
-            </label>
-
-            {/* Binding side quick select */}
-            {designStore.bindingType !== 'none' && (
-              <div className="mt-3">
-                <div className="text-xs text-krb-ink3 mb-1">Binding edge</div>
-                <div className="grid grid-cols-4 gap-1">
-                  {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
-                    <button
-                      key={side}
-                      type="button"
-                      onClick={() => designStore.setBindingSide(side)}
-                      className={`py-1 rounded text-xs capitalize transition-colors border ${
-                        designStore.bindingSide === side
-                          ? 'bg-krb-navy text-white border-krb-navy'
-                          : 'border-krb-rule text-krb-ink3 hover:border-krb-navy'
-                      }`}
-                    >
-                      {side[0].toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {designStore.bindingType === 'wire-o' && (
-              <div className="mt-2 text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1.5">
-                Wire-O: keep content 8 mm from spine edge.
-              </div>
-            )}
-            {designStore.bindingType === 'saddle' && numbering.total % 4 !== 0 && (
-              <div className="mt-2 text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1.5">
-                Saddle stitch needs pages in multiples of 4. Currently: {numbering.total}.
-              </div>
-            )}
-          </div>
-
-          {/* Perforation Lines */}
-          <div className="border-t border-krb-rule pt-3 mt-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider">Perforation</div>
-              <button
-                type="button"
-                onClick={() => {
-                  const next: PerforationLine = { axis: 'h', positionMm: 50, style: 'dashes' }
-                  designStore.setPerforationLines([...designStore.perforationLines, next])
-                }}
-                className="text-xs text-krb-navy hover:underline"
-              >
-                + Add
-              </button>
+          <SidebarSection title="Shapes" defaultOpen>
+            <div className="grid grid-cols-2 gap-1">
+              {[
+                { label: '▭ Rect', fn: addRect },
+                { label: '▢ Rounded', fn: () => fabricCanvasRef.current && addRoundedRect(fabricCanvasRef.current) },
+                { label: '○ Circle', fn: () => fabricCanvasRef.current && addCircle(fabricCanvasRef.current) },
+                { label: '— Line', fn: addLine },
+                { label: '→ Arrow', fn: () => fabricCanvasRef.current && addArrow(fabricCanvasRef.current) },
+                { label: '▬ Highlight', fn: () => fabricCanvasRef.current && addHighlight(fabricCanvasRef.current) },
+              ].map(({ label, fn }) => (
+                <button key={label} type="button" onClick={fn} className="px-2 py-1.5 rounded-lg hover:bg-krb-bg text-left text-xs">{label}</button>
+              ))}
             </div>
-            {designStore.perforationLines.length === 0 && (
-              <p className="text-xs text-krb-ink3 leading-relaxed">
-                Add cut guides for hand-held perforators. Prints as dashes or corner marks.
-              </p>
+            {/* Table */}
+            <div className="relative mt-1">
+              <button type="button" onClick={() => setShowTableConfig((v) => !v)} className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-krb-bg text-xs">⊞  Table</button>
+              {showTableConfig && (
+                <div className="absolute left-0 top-full mt-1 bg-white border border-krb-rule rounded-xl shadow-xl p-3 z-50 w-44">
+                  <p className="text-xs font-semibold text-krb-ink3 mb-2">Table size</p>
+                  <div className="flex gap-2 mb-2">
+                    <div className="flex-1"><label className="text-xs text-krb-ink3 block mb-0.5">Rows</label>
+                      <input type="number" min={1} max={20} value={tableRows} title="Rows" onChange={(e) => setTableRows(Number(e.target.value))} className="w-full border border-krb-rule rounded px-2 py-1 text-xs focus:outline-none" /></div>
+                    <div className="flex-1"><label className="text-xs text-krb-ink3 block mb-0.5">Cols</label>
+                      <input type="number" min={1} max={20} value={tableCols} title="Cols" onChange={(e) => setTableCols(Number(e.target.value))} className="w-full border border-krb-rule rounded px-2 py-1 text-xs focus:outline-none" /></div>
+                  </div>
+                  <button type="button"
+                    onClick={() => { if (fabricCanvasRef.current) addTable(fabricCanvasRef.current, tableRows, tableCols); setShowTableConfig(false) }}
+                    className="w-full bg-krb-orange text-white rounded-lg py-1.5 text-xs font-semibold">Insert Table</button>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-krb-ink3 mt-2 leading-relaxed px-1">Del · Ctrl+D · scroll=zoom · Space+drag=pan</p>
+          </SidebarSection>
+
+          <SidebarSection title="Page">
+            <div className="px-1 space-y-1 text-xs text-krb-ink3 mb-2">
+              <div>{paperSize} · {dims.widthMm.toFixed(0)} × {dims.heightMm.toFixed(0)} mm{receiptsPerPage > 1 ? ` · ${receiptsPerPage}-up` : ''}</div>
+              <div>{numberingStore.total} receipts = <strong className="text-krb-ink">{pdfPages} PDF pages</strong></div>
+            </div>
+            <button type="button" onClick={() => setShowSetupDialog(true)} className="w-full border border-krb-rule rounded-lg px-2 py-1.5 text-xs hover:bg-krb-bg mb-3">⚙ Change page setup</button>
+            <div className="flex items-center gap-2 mb-2 px-1">
+              <label htmlFor="bg-color" className="text-xs text-krb-ink3 flex-1">Background</label>
+              <input id="bg-color" type="color" value={designStore.pageBackgroundColor}
+                onChange={(e) => designStore.setPageBackgroundColor(e.target.value)}
+                className="w-7 h-7 rounded cursor-pointer border border-krb-rule" title="Page background colour" />
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer mb-1 px-1 text-xs">
+              <input type="checkbox" checked={designStore.bleedEnabled} onChange={(e) => designStore.setBleedEnabled(e.target.checked)} className="rounded" />3 mm bleed
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer px-1 text-xs">
+              <input type="checkbox" checked={designStore.showSafeZone} onChange={(e) => designStore.setShowSafeZone(e.target.checked)} className="rounded" />Safe zone
+            </label>
+          </SidebarSection>
+
+          <SidebarSection title="Grid & Guides">
+            <label className="flex items-center gap-2 cursor-pointer mb-2 px-1 text-xs">
+              <input type="checkbox" checked={designStore.showGrid} onChange={(e) => designStore.setShowGrid(e.target.checked)} className="rounded" />Show grid
+            </label>
+            {designStore.showGrid && (
+              <>
+                <div className="flex items-center gap-2 mb-2 px-1">
+                  <label htmlFor="grid-size" className="text-xs text-krb-ink3 flex-1">Grid size</label>
+                  <input id="grid-size" type="number" min={1} max={50} value={designStore.gridSizeMm}
+                    onChange={(e) => designStore.setGridSizeMm(Number(e.target.value))}
+                    className="w-14 border border-krb-rule rounded px-2 py-0.5 text-xs focus:outline-none focus:border-krb-navy" />
+                  <span className="text-xs text-krb-ink3">mm</span>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer mb-2 px-1 text-xs">
+                  <input type="checkbox" checked={designStore.snapToGrid} onChange={(e) => designStore.setSnapToGrid(e.target.checked)} className="rounded" />Snap to grid
+                </label>
+              </>
             )}
+            <div className="flex items-center justify-between px-1 mb-1">
+              <span className="text-xs text-krb-ink3">Guides ({userGuides.length})</span>
+              {userGuides.length > 0 && (
+                <button type="button" onClick={() => setUserGuides([])} className="text-xs text-red-400 hover:text-red-600">Clear all</button>
+              )}
+            </div>
+            <p className="text-xs text-krb-ink3 leading-relaxed px-1">Drag from ruler to add. Dbl-click near guide to delete.</p>
+          </SidebarSection>
+
+          <SidebarSection title="Binding & Perforation">
+            {designStore.bindingType === 'none'
+              ? <p className="text-xs text-krb-ink3 px-1 mb-2">Set binding type in Page Setup.</p>
+              : (
+                <div className="px-1 mb-3">
+                  <p className="text-xs text-krb-ink3 mb-1">Binding edge</p>
+                  <div className="grid grid-cols-4 gap-1">
+                    {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
+                      <button key={side} type="button" onClick={() => designStore.setBindingSide(side)}
+                        className={`py-1 rounded text-xs border transition-colors ${designStore.bindingSide === side ? 'bg-krb-navy text-white border-krb-navy' : 'border-krb-rule text-krb-ink3 hover:border-krb-navy'}`}>
+                        {side[0].toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                  {designStore.bindingType === 'wire-o' && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-1">Keep content 8mm from spine.</p>}
+                  {designStore.bindingType === 'saddle' && numberingStore.total % 4 !== 0 && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-1">Saddle stitch needs multiples of 4.</p>}
+                </div>
+              )
+            }
+            <div className="flex items-center justify-between px-1 mb-1">
+              <span className="text-xs font-medium text-krb-ink3">Perforation</span>
+              <button type="button" onClick={() => designStore.setPerforationLines([...designStore.perforationLines, { axis: 'h', positionMm: 50, style: 'dashes' }])} className="text-xs text-krb-navy hover:underline">+ Add</button>
+            </div>
+            {designStore.perforationLines.length === 0 && <p className="text-xs text-krb-ink3 px-1 leading-relaxed">Add cut guides for hand perforators.</p>}
             {designStore.perforationLines.map((line, idx) => (
-              <div key={idx} className="mb-2 p-2 border border-krb-rule rounded-lg space-y-1.5">
+              <div key={idx} className="mb-2 mx-1 p-2 border border-krb-rule rounded-lg space-y-1">
                 <div className="flex gap-1">
                   {(['h', 'v'] as const).map((axis) => (
-                    <button
-                      key={axis}
-                      type="button"
-                      onClick={() => {
-                        const updated = [...designStore.perforationLines]
-                        updated[idx] = { ...updated[idx], axis }
-                        designStore.setPerforationLines(updated)
-                      }}
-                      className={`flex-1 py-0.5 rounded text-xs border transition-colors ${
-                        line.axis === axis ? 'bg-krb-navy text-white border-krb-navy' : 'border-krb-rule text-krb-ink3 hover:border-krb-navy'
-                      }`}
-                    >
+                    <button key={axis} type="button"
+                      onClick={() => { const u = [...designStore.perforationLines]; u[idx] = { ...u[idx], axis }; designStore.setPerforationLines(u) }}
+                      className={`flex-1 py-0.5 rounded text-xs border ${line.axis === axis ? 'bg-krb-navy text-white border-krb-navy' : 'border-krb-rule text-krb-ink3 hover:border-krb-navy'}`}>
                       {axis === 'h' ? '─ H' : '│ V'}
                     </button>
                   ))}
                 </div>
                 <div className="flex gap-1 items-center">
-                  <input
-                    type="number"
-                    title="Position in mm"
-                    value={line.positionMm}
-                    min={0}
-                    step={1}
-                    onChange={(e) => {
-                      const updated = [...designStore.perforationLines]
-                      updated[idx] = { ...updated[idx], positionMm: Number(e.target.value) }
-                      designStore.setPerforationLines(updated)
-                    }}
-                    className="flex-1 border border-krb-rule rounded px-1.5 py-0.5 text-xs focus:outline-none focus:border-krb-navy"
-                  />
+                  <input type="number" title="mm" value={line.positionMm} min={0} step={1}
+                    onChange={(e) => { const u = [...designStore.perforationLines]; u[idx] = { ...u[idx], positionMm: Number(e.target.value) }; designStore.setPerforationLines(u) }}
+                    className="flex-1 border border-krb-rule rounded px-1.5 py-0.5 text-xs focus:outline-none focus:border-krb-navy" />
                   <span className="text-xs text-krb-ink3">mm</span>
                 </div>
                 <div className="flex gap-1">
-                  <select
-                    title="Perforation style"
-                    value={line.style}
-                    onChange={(e) => {
-                      const updated = [...designStore.perforationLines]
-                      updated[idx] = { ...updated[idx], style: e.target.value as PerforationLine['style'] }
-                      designStore.setPerforationLines(updated)
-                    }}
-                    className="flex-1 border border-krb-rule rounded px-1 py-0.5 text-xs focus:outline-none focus:border-krb-navy"
-                  >
+                  <select title="Style" value={line.style}
+                    onChange={(e) => { const u = [...designStore.perforationLines]; u[idx] = { ...u[idx], style: e.target.value as PerforationLine['style'] }; designStore.setPerforationLines(u) }}
+                    className="flex-1 border border-krb-rule rounded px-1 py-0.5 text-xs focus:outline-none">
                     <option value="dashes">Dashes</option>
                     <option value="corner-marks">Corner marks</option>
                   </select>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const updated = designStore.perforationLines.filter((_, i) => i !== idx)
-                      designStore.setPerforationLines(updated)
-                    }}
-                    className="text-red-400 hover:text-red-600 text-xs px-1.5"
-                    title="Remove perforation line"
-                  >✕</button>
+                  <button type="button" onClick={() => designStore.setPerforationLines(designStore.perforationLines.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-600 text-xs px-1.5">✕</button>
                 </div>
               </div>
             ))}
-          </div>
+          </SidebarSection>
 
-          {/* Numbering */}
-          <div className="border-t border-krb-rule pt-3 mt-3">
-            <div className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider mb-2">Numbering</div>
-
-            <label className="flex items-center gap-2 text-sm cursor-pointer mb-3">
-              <input type="checkbox" checked={numberingStore.numberingEnabled}
-                onChange={(e) => numberingStore.setNumberingEnabled(e.target.checked)} className="rounded" />
-              Enable numbering
+          <SidebarSection title="Numbering" defaultOpen>
+            <label className="flex items-center gap-2 cursor-pointer mb-2 px-1 text-xs">
+              <input type="checkbox" checked={numberingStore.numberingEnabled} onChange={(e) => numberingStore.setNumberingEnabled(e.target.checked)} className="rounded" />Enable numbering
             </label>
-
-            <div className="space-y-2">
-              {[
-                { label: 'Prefix', key: 'prefix', type: 'text' as const },
-                { label: 'Start', key: 'start', type: 'number' as const },
-                { label: 'Step', key: 'step', type: 'number' as const },
-                { label: 'Suffix', key: 'suffix', type: 'text' as const },
-                { label: 'Total receipts', key: 'total', type: 'number' as const },
-              ].map(({ label, key, type }) => (
-                <div key={key}>
-                  <label htmlFor={`num-${key}`} className="text-xs text-krb-ink3 block mb-0.5">{label}</label>
-                  <input
-                    id={`num-${key}`}
-                    type={type}
-                    value={String(numberingStore[key as keyof typeof numberingStore])}
-                    onChange={(e) => numberingStore.setConfig({ [key]: type === 'number' ? Number(e.target.value) : e.target.value })}
-                    className="w-full border border-krb-rule rounded px-2 py-1 text-sm focus:outline-none focus:border-krb-navy"
-                    min={type === 'number' ? (key === 'step' ? 1 : 0) : undefined}
-                  />
+            {numberingStore.numberingEnabled && (
+              <div className="space-y-2 px-1">
+                {([['Prefix', 'prefix', 'text'], ['Suffix', 'suffix', 'text'], ['Start', 'start', 'number'], ['Step', 'step', 'number'], ['Total receipts', 'total', 'number']] as [string, string, 'text' | 'number'][]).map(([label, key, type]) => (
+                  <div key={key}>
+                    <label htmlFor={`num-${key}`} className="text-xs text-krb-ink3 block mb-0.5">{label}</label>
+                    <input id={`num-${key}`} type={type} value={String(numberingStore[key as keyof typeof numberingStore])}
+                      onChange={(e) => numberingStore.setConfig({ [key]: type === 'number' ? Number(e.target.value) : e.target.value })}
+                      className="w-full border border-krb-rule rounded px-2 py-1 text-xs focus:outline-none focus:border-krb-navy"
+                      min={type === 'number' ? (key === 'step' ? 1 : 0) : undefined} />
+                  </div>
+                ))}
+                <div>
+                  <label htmlFor="num-format" className="text-xs text-krb-ink3 block mb-0.5">Format</label>
+                  <select id="num-format" value={numberingStore.digits} onChange={(e) => numberingStore.setConfig({ digits: Number(e.target.value) })}
+                    className="w-full border border-krb-rule rounded px-2 py-1 text-xs focus:outline-none focus:border-krb-navy">
+                    <option value={1}>1, 2, 3 …</option>
+                    <option value={2}>01, 02, 03 …</option>
+                    <option value={3}>001, 002, 003 …</option>
+                    <option value={4}>0001, 0002 … (default)</option>
+                    <option value={5}>00001, 00002 …</option>
+                  </select>
                 </div>
-              ))}
-
-              {/* Format dropdown */}
-              <div>
-                <label htmlFor="num-format" className="text-xs text-krb-ink3 block mb-0.5">Format</label>
-                <select
-                  id="num-format"
-                  value={numberingStore.digits}
-                  onChange={(e) => numberingStore.setConfig({ digits: Number(e.target.value) })}
-                  className="w-full border border-krb-rule rounded px-2 py-1 text-sm focus:outline-none focus:border-krb-navy"
-                >
-                  <option value={1}>1, 2, 3 …</option>
-                  <option value={2}>01, 02, 03 …</option>
-                  <option value={3}>001, 002, 003 …</option>
-                  <option value={4}>0001, 0002 … (default)</option>
-                  <option value={5}>00001, 00002 …</option>
-                </select>
+                <div className="text-xs font-mono bg-krb-bg rounded px-2 py-1.5 text-krb-ink3 break-all">{numberingPreview}</div>
               </div>
-
-              {/* Live preview */}
-              <div className="text-xs font-mono bg-krb-bg rounded px-2 py-1.5 text-krb-ink3 break-all">
-                {numberingPreview}
-              </div>
-            </div>
-          </div>
+            )}
+          </SidebarSection>
         </aside>
 
         {/* Canvas area with rulers */}
-        <div
-          ref={containerRef}
-          className="flex-1 overflow-hidden"
-          style={{ display: 'grid', gridTemplateColumns: '20px 1fr', gridTemplateRows: '20px 1fr' }}
-        >
-          {/* Corner square */}
+        <div ref={containerRef} className="flex-1 overflow-hidden"
+          style={{ display: 'grid', gridTemplateColumns: '20px 1fr', gridTemplateRows: '20px 1fr' }}>
           <div className="bg-slate-300 z-10" style={{ borderRight: '1px solid #aaa', borderBottom: '1px solid #aaa' }} />
-
-          {/* Horizontal ruler */}
           <div className="bg-slate-300 z-10 overflow-hidden" style={{ borderBottom: '1px solid #aaa' }}>
-            {rulerW > 0 && (
-              <RulerH
-                lengthPx={rulerW}
-                viewportTransform={viewportTransform}
-                paperSizeMm={dims.widthMm}
-              />
-            )}
+            {rulerW > 0 && <RulerH lengthPx={rulerW} viewportTransform={viewportTransform} paperSizeMm={dims.widthMm} onGuideStart={handleGuideStart} />}
           </div>
-
-          {/* Vertical ruler */}
           <div className="bg-slate-300 z-10 overflow-hidden" style={{ borderRight: '1px solid #aaa' }}>
-            {rulerH > 0 && (
-              <RulerV
-                lengthPx={rulerH}
-                viewportTransform={viewportTransform}
-                paperSizeMm={dims.heightMm}
-              />
-            )}
+            {rulerH > 0 && <RulerV lengthPx={rulerH} viewportTransform={viewportTransform} paperSizeMm={dims.heightMm} onGuideStart={handleGuideStart} />}
           </div>
-
-          {/* Canvas area */}
-          <div ref={canvasAreaRef} className="relative overflow-hidden bg-slate-200">
-            {/* Paper background div — white rect positioned by viewport transform */}
-            <div
-              style={{
-                position: 'absolute',
-                left: paperLeft,
-                top: paperTop,
-                width: paperDisplayW,
-                height: paperDisplayH,
-                background: '#ffffff',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.18), 0 1px 4px rgba(0,0,0,0.12)',
-                zIndex: 0,
-                pointerEvents: 'none',
-              }}
-            />
-            {/* Fabric canvas */}
+          <div ref={canvasAreaRef} className="relative overflow-hidden bg-slate-200"
+            onMouseMove={handleGuideMouseMove}
+            onMouseUp={handleGuideMouseUp}
+            onMouseLeave={handleGuideMouseUp}
+            onDoubleClick={handleCanvasAreaDblClick}>
+            {/* Paper background */}
+            <div style={{ position: 'absolute', left: paperLeft, top: paperTop, width: paperDisplayW, height: paperDisplayH, background: designStore.pageBackgroundColor, boxShadow: '0 4px 20px rgba(0,0,0,0.18),0 1px 4px rgba(0,0,0,0.12)', zIndex: 0, pointerEvents: 'none' }} />
             <canvas ref={canvasElRef} />
+            {guidePreviewStyle && <div style={guidePreviewStyle} />}
             <ZoomControls
               zoom={zoom}
               onZoomIn={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() * 1.2)}
               onZoomOut={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() / 1.2)}
-              onFit={() => {
-                const canvas = fabricCanvasRef.current
-                const area = canvasAreaRef.current
-                if (canvas && area) fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
-              }}
+              onFit={() => { const c = fabricCanvasRef.current; const a = canvasAreaRef.current; if (c && a) fitToViewport(c, a.offsetWidth, a.offsetHeight) }}
             />
           </div>
         </div>
 
-        {/* Right panel: Properties | Layers tabs */}
+        {/* Right panel */}
         <aside className="w-56 bg-white border-l border-krb-rule flex flex-col shrink-0">
           <div className="flex border-b border-krb-rule">
-            <button
-              type="button"
-              onClick={() => setRightTab('properties')}
-              className={`flex-1 py-2 text-xs font-semibold border-b-2 transition-colors ${rightTab === 'properties' ? 'text-krb-navy border-krb-navy' : 'text-krb-ink3 border-transparent hover:text-krb-ink'}`}
-            >Properties</button>
-            <button
-              type="button"
-              onClick={() => setRightTab('layers')}
-              className={`flex-1 py-2 text-xs font-semibold border-b-2 transition-colors ${rightTab === 'layers' ? 'text-krb-navy border-krb-navy' : 'text-krb-ink3 border-transparent hover:text-krb-ink'}`}
-            >Layers</button>
+            {(['properties', 'layers'] as const).map((tab) => (
+              <button key={tab} type="button" onClick={() => setRightTab(tab)}
+                className={`flex-1 py-2 text-xs font-semibold border-b-2 capitalize transition-colors ${rightTab === tab ? 'text-krb-navy border-krb-navy' : 'text-krb-ink3 border-transparent hover:text-krb-ink'}`}>
+                {tab}
+              </button>
+            ))}
           </div>
-          {rightTab === 'properties' ? (
-            <PropertiesPanel
-              canvas={fabricCanvas}
-              selectedObj={selectedObj}
-              onChanged={() => {
-                const canvas = fabricCanvasRef.current
-                if (canvas) designStore.pushHistory(serializeCanvas(canvas))
-              }}
-            />
-          ) : (
-            <LayersPanel
-              canvas={fabricCanvas}
-              selectedObj={selectedObj}
-              onSelectionChange={setSelectedObj}
-            />
-          )}
+          {rightTab === 'properties'
+            ? <PropertiesPanel canvas={fabricCanvas} selectedObj={selectedObj} onChanged={() => { const c = fabricCanvasRef.current; if (c) designStore.pushHistory(serializeCanvas(c)) }} />
+            : <LayersPanel canvas={fabricCanvas} selectedObj={selectedObj} onSelectionChange={setSelectedObj} />
+          }
         </aside>
       </div>
 
-      {/* Dialogs */}
-      {showAIDialog && (
-        <AIGenerateDialog canvas={fabricCanvas} onClose={() => setShowAIDialog(false)} />
-      )}
+      {showAIDialog && <AIGenerateDialog canvas={fabricCanvas} onClose={() => setShowAIDialog(false)} />}
       {showSetupDialog && (
-        <PageSetupDialog
-          title="Page Setup"
-          initialSettings={{
-            paperSize,
-            orientation,
-            customSize: designStore.customSize,
-            bleedEnabled: designStore.bleedEnabled,
-            showSafeZone: designStore.showSafeZone,
-            bindingType: designStore.bindingType,
-            bindingSide: designStore.bindingSide,
-            twoUpOrientation,
-            receiptsPerPage,
-          }}
-          onConfirm={handlePageSetupConfirm}
-          onClose={() => setShowSetupDialog(false)}
-        />
+        <PageSetupDialog title="Page Setup"
+          initialSettings={{ paperSize, orientation, customSize: designStore.customSize, bleedEnabled: designStore.bleedEnabled, showSafeZone: designStore.showSafeZone, bindingType: designStore.bindingType, bindingSide: designStore.bindingSide, twoUpOrientation, receiptsPerPage }}
+          onConfirm={handlePageSetupConfirm} onClose={() => setShowSetupDialog(false)} />
       )}
       {showPreview && fabricCanvas && (
-        <PreviewModal
-          canvas={fabricCanvas}
-          receiptsPerPage={receiptsPerPage}
-          twoUpOrientation={twoUpOrientation}
-          orientation={orientation}
-          onClose={() => setShowPreview(false)}
-        />
+        <PreviewModal canvas={fabricCanvas} receiptsPerPage={receiptsPerPage} twoUpOrientation={twoUpOrientation} orientation={orientation} onClose={() => setShowPreview(false)} />
       )}
       {contextMenu && fabricCanvas && (
-        <CanvasContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          canvas={fabricCanvas}
-          target={contextMenu.target}
-          onClose={() => setContextMenu(null)}
-          onChanged={() => {
-            if (fabricCanvas) designStore.pushHistory(serializeCanvas(fabricCanvas))
-          }}
-        />
+        <CanvasContextMenu x={contextMenu.x} y={contextMenu.y} canvas={fabricCanvas} target={contextMenu.target}
+          onClose={() => setContextMenu(null)} onChanged={() => { if (fabricCanvas) designStore.pushHistory(serializeCanvas(fabricCanvas)) }} />
       )}
     </main>
   )

@@ -37,6 +37,10 @@ interface DesignState {
   twoUpOrientation: 'h' | 'v'
   receiptsPerPage: ReceiptsPerPage
   perforationLines: PerforationLine[]
+  showGrid: boolean
+  gridSizeMm: number
+  snapToGrid: boolean
+  pageBackgroundColor: string
   history: string[]
   historyIndex: number
 
@@ -53,6 +57,10 @@ interface DesignState {
   setTwoUpOrientation: (o: 'h' | 'v') => void
   setReceiptsPerPage: (n: ReceiptsPerPage) => void
   setPerforationLines: (lines: PerforationLine[]) => void
+  setShowGrid: (show: boolean) => void
+  setGridSizeMm: (mm: number) => void
+  setSnapToGrid: (snap: boolean) => void
+  setPageBackgroundColor: (color: string) => void
   pushHistory: (json: string) => void
   undo: () => string | null
   redo: () => string | null
@@ -73,6 +81,10 @@ const DEFAULT_STATE = {
   twoUpOrientation: 'v' as 'h' | 'v',
   receiptsPerPage: 1 as ReceiptsPerPage,
   perforationLines: [] as PerforationLine[],
+  showGrid: false,
+  gridSizeMm: 5,
+  snapToGrid: true,
+  pageBackgroundColor: '#ffffff',
   history: [],
   historyIndex: -1,
 }
@@ -93,6 +105,10 @@ export const useDesignStore = create<DesignState>((set, get) => ({
   setTwoUpOrientation: (o) => set({ twoUpOrientation: o }),
   setReceiptsPerPage: (n) => set({ receiptsPerPage: n }),
   setPerforationLines: (lines) => set({ perforationLines: lines }),
+  setShowGrid: (show) => set({ showGrid: show }),
+  setGridSizeMm: (mm) => set({ gridSizeMm: mm }),
+  setSnapToGrid: (snap) => set({ snapToGrid: snap }),
+  setPageBackgroundColor: (color) => set({ pageBackgroundColor: color }),
 
   pushHistory: (json) => {
     const { history, historyIndex } = get()

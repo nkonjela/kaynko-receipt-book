@@ -7,6 +7,7 @@ interface RulerProps {
   lengthPx: number
   viewportTransform: number[]
   paperSizeMm: number
+  onGuideStart?: (axis: 'h' | 'v', e: React.MouseEvent) => void
 }
 
 function getTickInterval(pxPerMm: number): { minor: number; major: number; label: number } {
@@ -16,13 +17,12 @@ function getTickInterval(pxPerMm: number): { minor: number; major: number; label
   return { minor: 10, major: 20, label: 50 }
 }
 
-export function RulerH({ lengthPx, viewportTransform: vt, paperSizeMm }: RulerProps) {
+export function RulerH({ lengthPx, viewportTransform: vt, paperSizeMm, onGuideStart }: RulerProps) {
   const scale = vt[0] || 1
   const offsetPx = vt[4]
   const pxPerMm = scale * (96 / 25.4)
   const { minor, major, label } = getTickInterval(pxPerMm)
 
-  // Build ticks in mm space
   const startMm = Math.floor(-offsetPx / pxPerMm / minor) * minor - minor
   const endMm = startMm + (lengthPx / pxPerMm) + minor * 2
 
@@ -39,7 +39,8 @@ export function RulerH({ lengthPx, viewportTransform: vt, paperSizeMm }: RulerPr
     <svg
       width={lengthPx}
       height={THICKNESS}
-      style={{ display: 'block', userSelect: 'none' }}
+      style={{ display: 'block', userSelect: 'none', cursor: 's-resize' }}
+      onMouseDown={(e) => onGuideStart?.('h', e)}
     >
       <rect width={lengthPx} height={THICKNESS} fill={RULER_BG} />
       {/* paper highlight band */}
@@ -65,7 +66,7 @@ export function RulerH({ lengthPx, viewportTransform: vt, paperSizeMm }: RulerPr
   )
 }
 
-export function RulerV({ lengthPx, viewportTransform: vt, paperSizeMm }: RulerProps) {
+export function RulerV({ lengthPx, viewportTransform: vt, paperSizeMm, onGuideStart }: RulerProps) {
   const scale = vt[3] || 1
   const offsetPx = vt[5]
   const pxPerMm = scale * (96 / 25.4)
@@ -87,7 +88,8 @@ export function RulerV({ lengthPx, viewportTransform: vt, paperSizeMm }: RulerPr
     <svg
       width={THICKNESS}
       height={lengthPx}
-      style={{ display: 'block', userSelect: 'none' }}
+      style={{ display: 'block', userSelect: 'none', cursor: 'e-resize' }}
+      onMouseDown={(e) => onGuideStart?.('v', e)}
     >
       <rect width={THICKNESS} height={lengthPx} fill={RULER_BG} />
       {/* paper highlight band */}
