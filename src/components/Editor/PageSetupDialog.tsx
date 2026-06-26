@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { PaperSizeName, Orientation, BindingType, CustomSize } from '@/store/designStore'
+import type { PaperSizeName, Orientation, BindingType, CustomSize, ReceiptsPerPage } from '@/store/designStore'
 
 export interface PageSetupSettings {
   paperSize: PaperSizeName
@@ -8,6 +8,38 @@ export interface PageSetupSettings {
   bleedEnabled: boolean
   showSafeZone: boolean
   bindingType: BindingType
+  receiptsPerPage: ReceiptsPerPage
+}
+
+const RPP_OPTIONS: { value: ReceiptsPerPage; label: string; cols: number; rows: number }[] = [
+  { value: 1, label: '1-up', cols: 1, rows: 1 },
+  { value: 2, label: '2-up', cols: 1, rows: 2 },
+  { value: 4, label: '4-up', cols: 2, rows: 2 },
+  { value: 6, label: '6-up', cols: 3, rows: 2 },
+  { value: 8, label: '8-up', cols: 4, rows: 2 },
+]
+
+function SlotGridIcon({ cols, rows, size = 32 }: { cols: number; rows: number; size?: number }) {
+  const gap = 1
+  const cellW = (size - gap * (cols + 1)) / cols
+  const cellH = (size - gap * (rows + 1)) / rows
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {Array.from({ length: rows }).map((_, r) =>
+        Array.from({ length: cols }).map((_, c) => (
+          <rect
+            key={`${r}-${c}`}
+            x={gap + c * (cellW + gap)}
+            y={gap + r * (cellH + gap)}
+            width={cellW}
+            height={cellH}
+            rx={1}
+            fill="currentColor"
+          />
+        ))
+      )}
+    </svg>
+  )
 }
 
 interface Preset {
@@ -67,6 +99,7 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
   const [bleedEnabled, setBleedEnabled] = useState(initialSettings?.bleedEnabled ?? true)
   const [showSafeZone, setShowSafeZone] = useState(initialSettings?.showSafeZone ?? true)
   const [bindingType, setBindingType] = useState<BindingType>(initialSettings?.bindingType ?? 'pad')
+  const [receiptsPerPage, setReceiptsPerPage] = useState<ReceiptsPerPage>(initialSettings?.receiptsPerPage ?? 1)
   const [widthInput, setWidthInput] = useState(toUnit(148, 'mm'))
   const [heightInput, setHeightInput] = useState(toUnit(210, 'mm'))
   const [customError, setCustomError] = useState('')
@@ -141,6 +174,7 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
       bleedEnabled,
       showSafeZone,
       bindingType,
+      receiptsPerPage,
     })
   }
 
@@ -155,6 +189,33 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
         </div>
 
         <div className="px-6 py-5 space-y-6">
+          {/* Receipts per page */}
+          <div>
+            <label className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider block mb-2">Receipts per Page</label>
+            <div className="flex gap-2 flex-wrap">
+              {RPP_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setReceiptsPerPage(opt.value)}
+                  className={`flex flex-col items-center gap-1 px-3 py-2 rounded-xl border-2 transition-colors ${
+                    receiptsPerPage === opt.value
+                      ? 'border-krb-navy bg-krb-navy/5 text-krb-navy'
+                      : 'border-krb-rule text-krb-ink3 hover:border-krb-navy/40'
+                  }`}
+                >
+                  <SlotGridIcon cols={opt.cols} rows={opt.rows} />
+                  <span className="text-xs font-medium">{opt.label}</span>
+                </button>
+              ))}
+            </div>
+            {receiptsPerPage > 1 && (
+              <p className="text-xs text-krb-ink3 mt-2 bg-krb-bg rounded-lg px-3 py-2">
+                You&apos;ll design one receipt slot — the PDF will tile {receiptsPerPage} copies per page automatically.
+              </p>
+            )}
+          </div>
+
           {/* Category tabs + preset select */}
           <div>
             <label className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider block mb-2">Paper Size</label>

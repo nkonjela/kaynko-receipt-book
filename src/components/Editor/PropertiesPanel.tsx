@@ -173,15 +173,15 @@ export default function PropertiesPanel({ canvas, selectedObj, onChanged }: Prop
 
   if (!selectedObj) {
     return (
-      <aside className="w-56 bg-white border-l border-krb-rule flex flex-col items-center justify-center p-4 shrink-0">
+      <div className="flex-1 flex flex-col items-center justify-center p-4">
         <div className="text-3xl mb-2 opacity-20">◻</div>
         <p className="text-xs text-krb-ink3 text-center leading-relaxed">Select an object to edit its properties</p>
-      </aside>
+      </div>
     )
   }
 
   return (
-    <aside className="w-56 bg-white border-l border-krb-rule flex flex-col p-3 shrink-0 overflow-y-auto">
+    <div className="flex-1 flex flex-col p-3 overflow-y-auto">
       <div className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider mb-3">Properties</div>
 
       {/* ── Text ── */}
@@ -322,6 +322,6 @@ export default function PropertiesPanel({ canvas, selectedObj, onChanged }: Prop
             className="border border-krb-rule rounded-lg py-1.5 text-xs hover:bg-krb-bg">To Back</button>
         </div>
       </div>
-    </aside>
+    </div>
   )
 }

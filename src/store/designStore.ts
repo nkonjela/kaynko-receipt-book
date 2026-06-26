@@ -7,6 +7,7 @@ export type PaperSizeName =
   | 'Custom'
 
 export type BindingType = 'none' | 'pad' | 'saddle' | 'wire-o'
+export type ReceiptsPerPage = 1 | 2 | 4 | 6 | 8
 
 export type Orientation = 'portrait' | 'landscape'
 
@@ -25,6 +26,7 @@ interface DesignState {
   bleedEnabled: boolean
   showSafeZone: boolean
   bindingType: BindingType
+  receiptsPerPage: ReceiptsPerPage
   history: string[]
   historyIndex: number
 
@@ -37,6 +39,7 @@ interface DesignState {
   setBleedEnabled: (enabled: boolean) => void
   setShowSafeZone: (show: boolean) => void
   setBindingType: (type: BindingType) => void
+  setReceiptsPerPage: (n: ReceiptsPerPage) => void
   pushHistory: (json: string) => void
   undo: () => string | null
   redo: () => string | null
@@ -53,6 +56,7 @@ const DEFAULT_STATE = {
   bleedEnabled: true,
   showSafeZone: true,
   bindingType: 'pad' as BindingType,
+  receiptsPerPage: 1 as ReceiptsPerPage,
   history: [],
   historyIndex: -1,
 }
@@ -69,6 +73,7 @@ export const useDesignStore = create<DesignState>((set, get) => ({
   setBleedEnabled: (enabled) => set({ bleedEnabled: enabled }),
   setShowSafeZone: (show) => set({ showSafeZone: show }),
   setBindingType: (type) => set({ bindingType: type }),
+  setReceiptsPerPage: (n) => set({ receiptsPerPage: n }),
 
   pushHistory: (json) => {
     const { history, historyIndex } = get()

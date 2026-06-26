@@ -10,6 +10,7 @@ export interface NumberingConfig {
 }
 
 interface NumberingState extends NumberingConfig {
+  numberingEnabled: boolean
   setPrefix: (prefix: string) => void
   setStart: (start: number) => void
   setDigits: (digits: number) => void
@@ -17,6 +18,7 @@ interface NumberingState extends NumberingConfig {
   setSuffix: (suffix: string) => void
   setTotal: (total: number) => void
   setConfig: (config: Partial<NumberingConfig>) => void
+  setNumberingEnabled: (enabled: boolean) => void
 }
 
 const DEFAULT_CONFIG: NumberingConfig = {
@@ -30,6 +32,7 @@ const DEFAULT_CONFIG: NumberingConfig = {
 
 export const useNumberingStore = create<NumberingState>((set) => ({
   ...DEFAULT_CONFIG,
+  numberingEnabled: true,
 
   setPrefix: (prefix) => set({ prefix }),
   setStart: (start) => set({ start }),
@@ -38,4 +41,5 @@ export const useNumberingStore = create<NumberingState>((set) => ({
   setSuffix: (suffix) => set({ suffix }),
   setTotal: (total) => set({ total }),
   setConfig: (config) => set(config),
+  setNumberingEnabled: (enabled) => set({ numberingEnabled: enabled }),
 }))

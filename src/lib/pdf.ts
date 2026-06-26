@@ -1,5 +1,6 @@
 import { PDFDocument, PDFPage, rgb, StandardFonts, degrees } from 'pdf-lib'
-import { getPaperDimensions, mmToPt } from '@/lib/paperSizes'
+import { getPaperDimensions, getSlotGrid, mmToPt } from '@/lib/paperSizes'
+import type { ReceiptsPerPage } from '@/lib/paperSizes'
 import { generateNumbers } from '@/lib/numbering'
 import type { NumberingConfig } from '@/lib/numbering'
 import type { PaperSizeName, Orientation } from '@/store/designStore'
@@ -35,6 +36,8 @@ export interface ExportConfig {
   numbering: NumberingConfig
   canvasObjects: CanvasObject[]
   customSize?: { widthMm: number; heightMm: number } | null
+  receiptsPerPage?: ReceiptsPerPage
+  numberingEnabled?: boolean
 }
 
 export function mmToCropPt(mm: number): number {
@@ -42,13 +45,11 @@ export function mmToCropPt(mm: number): number {
 }
 
 // Hairline crop marks 3mm outside the trim edge, extending 5mm further out.
-// bleedMm is ADDED to the trim offset so marks are always outside the trim.
 export function drawCropMarks(page: PDFPage, trimBox: Box, bleedMm = 3): void {
   const bleedPt = mmToPt(bleedMm)
-  const markLen = mmToPt(5) // 5mm mark length
+  const markLen = mmToPt(5)
   const { x, y, width, height } = trimBox
 
-  // In PDF coordinates, Y=0 is at the BOTTOM
   const left = x
   const right = x + width
   const bottom = y
@@ -57,21 +58,13 @@ export function drawCropMarks(page: PDFPage, trimBox: Box, bleedMm = 3): void {
   const hairline = 0.25
 
   const lines: [number, number, number, number][] = [
-    // top-left corner: horizontal
     [left - bleedPt - markLen, top, left - bleedPt, top],
-    // top-left corner: vertical
     [left, top + bleedPt, left, top + bleedPt + markLen],
-    // top-right corner: horizontal
     [right + bleedPt, top, right + bleedPt + markLen, top],
-    // top-right corner: vertical
     [right, top + bleedPt, right, top + bleedPt + markLen],
-    // bottom-left corner: horizontal
     [left - bleedPt - markLen, bottom, left - bleedPt, bottom],
-    // bottom-left corner: vertical
     [left, bottom - bleedPt, left, bottom - bleedPt - markLen],
-    // bottom-right corner: horizontal
     [right + bleedPt, bottom, right + bleedPt + markLen, bottom],
-    // bottom-right corner: vertical
     [right, bottom - bleedPt, right, bottom - bleedPt - markLen],
   ]
 
@@ -87,10 +80,6 @@ export function drawCropMarks(page: PDFPage, trimBox: Box, bleedMm = 3): void {
 
 function pxToPt(px: number, dpi = 96): number {
   return px * (72 / dpi)
-}
-
-function flipY(yPx: number, pageHeightPt: number, objHeightPx: number): number {
-  return pageHeightPt - pxToPt(yPx) - pxToPt(objHeightPx)
 }
 
 async function drawWatermark(page: PDFPage, doc: PDFDocument): Promise<void> {
@@ -112,7 +101,9 @@ async function renderObjectsToPage(
   doc: PDFDocument,
   objects: CanvasObject[],
   pageNumber: string,
-  pageHeightPt: number,
+  slotOffsetXPt: number,
+  slotOffsetYPt: number,
+  slotHeightPt: number,
 ): Promise<void> {
   const font = await doc.embedFont(StandardFonts.Helvetica)
 
@@ -121,8 +112,9 @@ async function renderObjectsToPage(
     const scaleY = obj.scaleY ?? 1
     const wPt = pxToPt(obj.width * scaleX)
     const hPt = pxToPt(obj.height * scaleY)
-    const xPt = pxToPt(obj.left)
-    const yPt = flipY(obj.top, pageHeightPt, obj.height * scaleY)
+    const xPt = slotOffsetXPt + pxToPt(obj.left)
+    // Y-flip is relative to the slot height, then offset by the slot's Y position
+    const yPt = slotOffsetYPt + (slotHeightPt - pxToPt(obj.top) - hPt)
 
     if (obj.data?.type === 'number-field') {
       page.drawText(pageNumber, {
@@ -144,6 +136,29 @@ async function renderObjectsToPage(
   }
 }
 
+function drawSlotDividers(page: PDFPage, trimBox: Box, cols: number, rows: number): void {
+  const slotW = trimBox.width / cols
+  const slotH = trimBox.height / rows
+  const gray = rgb(0.7, 0.7, 0.7)
+
+  for (let c = 1; c < cols; c++) {
+    page.drawLine({
+      start: { x: trimBox.x + c * slotW, y: trimBox.y },
+      end: { x: trimBox.x + c * slotW, y: trimBox.y + trimBox.height },
+      thickness: 0.25,
+      color: gray,
+    })
+  }
+  for (let r = 1; r < rows; r++) {
+    page.drawLine({
+      start: { x: trimBox.x, y: trimBox.y + r * slotH },
+      end: { x: trimBox.x + trimBox.width, y: trimBox.y + r * slotH },
+      thickness: 0.25,
+      color: gray,
+    })
+  }
+}
+
 function parseColor(fill?: string): ReturnType<typeof rgb> {
   if (!fill || fill === 'transparent') return rgb(0, 0, 0)
   if (fill.startsWith('#')) {
@@ -157,7 +172,12 @@ function parseColor(fill?: string): ReturnType<typeof rgb> {
 }
 
 export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
-  const { paperSize, orientation, bleedEnabled, cropMarks, watermark, numbering, canvasObjects, customSize } = config
+  const {
+    paperSize, orientation, bleedEnabled, cropMarks, watermark,
+    numbering, canvasObjects, customSize,
+    receiptsPerPage = 1,
+    numberingEnabled = true,
+  } = config
 
   const dims = getPaperDimensions(paperSize, orientation, customSize)
   const bleedMm = bleedEnabled ? 3 : 0
@@ -175,26 +195,50 @@ export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
     height: trimHeightPt,
   }
 
+  const { cols, rows } = getSlotGrid(receiptsPerPage, orientation)
+  const slotWPt = trimWidthPt / cols
+  const slotHPt = trimHeightPt / rows
+  const pdfPageCount = Math.ceil(numbering.total / receiptsPerPage)
+
   const doc = await PDFDocument.create()
   doc.setCreator('Kaynko Receipt Book')
   doc.setProducer('KRB / pdf-lib')
 
   const numbers = generateNumbers(numbering)
 
-  for (let i = 0; i < numbering.total; i++) {
+  for (let pageIdx = 0; pageIdx < pdfPageCount; pageIdx++) {
     const page = doc.addPage([pageWidthPt, pageHeightPt])
 
     if (bleedEnabled) {
       page.drawRectangle({
-        x: 0,
-        y: 0,
-        width: pageWidthPt,
-        height: pageHeightPt,
+        x: 0, y: 0,
+        width: pageWidthPt, height: pageHeightPt,
         color: rgb(1, 1, 1),
       })
     }
 
-    await renderObjectsToPage(page, doc, canvasObjects, numbers[i], pageHeightPt)
+    for (let slotIdx = 0; slotIdx < receiptsPerPage; slotIdx++) {
+      const receiptIdx = pageIdx * receiptsPerPage + slotIdx
+      if (receiptIdx >= numbering.total) break
+
+      const col = slotIdx % cols
+      const row = Math.floor(slotIdx / cols)
+
+      // PDF Y=0 is bottom; row 0 = top = highest Y in PDF coords
+      const slotOffsetXPt = bleedPt + col * slotWPt
+      const slotOffsetYPt = bleedPt + (rows - 1 - row) * slotHPt
+
+      const effectiveNumber = numberingEnabled ? numbers[receiptIdx] : numbers[0]
+
+      await renderObjectsToPage(
+        page, doc, canvasObjects, effectiveNumber,
+        slotOffsetXPt, slotOffsetYPt, slotHPt,
+      )
+    }
+
+    if (receiptsPerPage > 1) {
+      drawSlotDividers(page, trimBox, cols, rows)
+    }
 
     if (cropMarks) {
       drawCropMarks(page, trimBox, bleedMm > 0 ? bleedMm : 3)

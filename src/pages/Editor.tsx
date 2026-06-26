@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import type { Canvas as FabricCanvas, FabricObject } from 'fabric'
-import { Textbox, Rect, Line, Group, FabricText, ActiveSelection } from 'fabric'
-import { initCanvas, serializeCanvas, loadCanvas, addNumberField } from '@/lib/canvas'
+import { Textbox, Rect, Line, ActiveSelection } from 'fabric'
+import {
+  initCanvas, serializeCanvas, loadCanvas, addNumberField,
+  attachZoomPan, applyZoom, fitToViewport,
+  addCircle, addHighlight, addTable,
+  addImagePlaceholder, addBlankField,
+  centrePos,
+} from '@/lib/canvas'
 import { exportPDF } from '@/lib/pdf'
-import { getPaperDimensions } from '@/lib/paperSizes'
+import { getPaperDimensions, getSlotDimensions } from '@/lib/paperSizes'
+import { generateNumbers } from '@/lib/numbering'
 import { supabase } from '@/lib/supabase'
 import { useDesignStore } from '@/store/designStore'
 import { useNumberingStore } from '@/store/numberingStore'
@@ -14,13 +21,8 @@ import AIGenerateDialog from '@/components/Editor/AIGenerateDialog'
 import PropertiesPanel from '@/components/Editor/PropertiesPanel'
 import CanvasContextMenu from '@/components/Editor/CanvasContextMenu'
 import PageSetupDialog, { type PageSetupSettings } from '@/components/Editor/PageSetupDialog'
-
-function centrePos(canvas: FabricCanvas, objW: number, objH: number) {
-  return {
-    left: Math.round((canvas.width / 2) - (objW / 2)),
-    top: Math.round((canvas.height / 2) - (objH / 2)),
-  }
-}
+import ZoomControls from '@/components/Editor/ZoomControls'
+import LayersPanel from '@/components/Editor/LayersPanel'
 
 export default function Editor() {
   const { designId } = useParams()
@@ -28,6 +30,8 @@ export default function Editor() {
 
   const canvasElRef = useRef<HTMLCanvasElement>(null)
   const fabricCanvasRef = useRef<FabricCanvas | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
   const [fabricCanvas, setFabricCanvas] = useState<FabricCanvas | null>(null)
   const [selectedObj, setSelectedObj] = useState<FabricObject | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; target: FabricObject } | null>(null)
@@ -36,6 +40,12 @@ export default function Editor() {
   const [saving, setSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
+  const [zoom, setZoom] = useState(1.0)
+  const [rightTab, setRightTab] = useState<'properties' | 'layers'>('properties')
+  const [exportFormat, setExportFormat] = useState<'pdf' | 'png'>('pdf')
+  const [showTableConfig, setShowTableConfig] = useState(false)
+  const [tableRows, setTableRows] = useState(3)
+  const [tableCols, setTableCols] = useState(3)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
 
   const designStore = useDesignStore()
@@ -45,6 +55,7 @@ export default function Editor() {
 
   const paperSize = designStore.paperSize
   const orientation = designStore.orientation
+  const receiptsPerPage = designStore.receiptsPerPage
   const numbering = numberingStore
 
   useEffect(() => {
@@ -58,9 +69,13 @@ export default function Editor() {
     const el = canvasElRef.current
     if (!el) return
 
-    const canvas = initCanvas(el, paperSize, orientation, designStore.customSize)
+    const canvas = initCanvas(el, paperSize, orientation, designStore.customSize, receiptsPerPage)
     fabricCanvasRef.current = canvas
     setFabricCanvas(canvas)
+
+    const cleanupZoomPan = attachZoomPan(canvas)
+
+    canvas.on('after:render', () => setZoom(canvas.getZoom()))
 
     canvas.on('object:modified', () => {
       const json = serializeCanvas(canvas)
@@ -84,13 +99,19 @@ export default function Editor() {
       }
     })
 
-    // Prevent default browser context menu on canvas
     const wrapper = el.parentElement
     const preventCtx = (e: Event) => e.preventDefault()
     wrapper?.addEventListener('contextmenu', preventCtx)
 
+    // Fit on first load
+    requestAnimationFrame(() => {
+      const cont = containerRef.current
+      if (cont) fitToViewport(canvas, cont.offsetWidth, cont.offsetHeight)
+    })
+
     return () => {
       wrapper?.removeEventListener('contextmenu', preventCtx)
+      cleanupZoomPan()
       canvas.dispose()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -180,6 +201,24 @@ export default function Editor() {
         return
       }
 
+      // Zoom shortcuts
+      if (e.ctrlKey && (e.key === '=' || e.key === '+')) {
+        e.preventDefault()
+        applyZoom(canvas, canvas.getZoom() * 1.2)
+        return
+      }
+      if (e.ctrlKey && e.key === '-') {
+        e.preventDefault()
+        applyZoom(canvas, canvas.getZoom() / 1.2)
+        return
+      }
+      if (e.ctrlKey && e.key === '0') {
+        e.preventDefault()
+        const cont = containerRef.current
+        if (cont) fitToViewport(canvas, cont.offsetWidth, cont.offsetHeight)
+        return
+      }
+
       // Arrow nudge
       const obj = canvas.getActiveObject()
       if (obj) {
@@ -226,47 +265,64 @@ export default function Editor() {
     setTimeout(() => setSaveMsg(''), 2000)
   }, [fabricCanvas, user, designId, designStore.name, paperSize, numbering, navigate])
 
-  async function handleExport() {
+  async function handleExportPDF() {
     if (!fabricCanvas) return
     const maxPages = maxPagesForTier(tier)
     const total = Math.min(numbering.total, maxPages)
     const watermark = !canExportWithoutWatermark(tier)
 
+    const bytes = await exportPDF({
+      paperSize,
+      orientation,
+      bleedEnabled: designStore.bleedEnabled,
+      cropMarks: true,
+      watermark,
+      cmyk: false,
+      receiptsPerPage,
+      numberingEnabled: numberingStore.numberingEnabled,
+      numbering: { ...numberingStore, total },
+      canvasObjects: fabricCanvas.getObjects().map((obj) => {
+        const o = obj as unknown as Record<string, unknown>
+        return {
+          type: String(o['type'] ?? 'rect'),
+          left: Number(obj.left ?? 0),
+          top: Number(obj.top ?? 0),
+          width: Number(obj.width ?? 0),
+          height: Number(obj.height ?? 0),
+          scaleX: Number(obj.scaleX ?? 1),
+          scaleY: Number(obj.scaleY ?? 1),
+          text: o['text'] as string | undefined,
+          fontSize: o['fontSize'] as number | undefined,
+          fill: o['fill'] as string | undefined,
+          data: o['data'] as { type?: string } | undefined,
+        }
+      }),
+    })
+
+    const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${designStore.name.replace(/\s+/g, '-')}.pdf`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleExportPNG() {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+    const dataUrl = canvas.toDataURL({ format: 'png', multiplier: 300 / 96 })
+    const a = document.createElement('a')
+    a.href = dataUrl
+    a.download = `${designStore.name.replace(/\s+/g, '-')}.png`
+    a.click()
+  }
+
+  async function handleExport() {
     setExporting(true)
     try {
-      const bytes = await exportPDF({
-        paperSize,
-        orientation,
-        bleedEnabled: designStore.bleedEnabled,
-        cropMarks: true,
-        watermark,
-        cmyk: false,
-        numbering: { ...numberingStore, total },
-        canvasObjects: fabricCanvas.getObjects().map((obj) => {
-          const o = obj as unknown as Record<string, unknown>
-          return {
-            type: String(o['type'] ?? 'rect'),
-            left: Number(obj.left ?? 0),
-            top: Number(obj.top ?? 0),
-            width: Number(obj.width ?? 0),
-            height: Number(obj.height ?? 0),
-            scaleX: Number(obj.scaleX ?? 1),
-            scaleY: Number(obj.scaleY ?? 1),
-            text: o['text'] as string | undefined,
-            fontSize: o['fontSize'] as number | undefined,
-            fill: o['fill'] as string | undefined,
-            data: o['data'] as { type?: string } | undefined,
-          }
-        }),
-      })
-
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${designStore.name.replace(/\s+/g, '-')}.pdf`
-      a.click()
-      URL.revokeObjectURL(url)
+      if (exportFormat === 'png') await handleExportPNG()
+      else await handleExportPDF()
     } finally {
       setExporting(false)
     }
@@ -280,18 +336,22 @@ export default function Editor() {
     store.setBleedEnabled(settings.bleedEnabled)
     store.setShowSafeZone(settings.showSafeZone)
     store.setBindingType(settings.bindingType)
+    store.setReceiptsPerPage(settings.receiptsPerPage)
     setShowSetupDialog(false)
 
-    // Resize the live canvas
     const canvas = fabricCanvasRef.current
     if (canvas) {
-      const dims = getPaperDimensions(settings.paperSize, settings.orientation, settings.customSize)
+      const dims = settings.receiptsPerPage > 1
+        ? getSlotDimensions(settings.paperSize, settings.orientation, settings.receiptsPerPage, settings.customSize)
+        : getPaperDimensions(settings.paperSize, settings.orientation, settings.customSize ?? undefined)
       canvas.setDimensions({ width: dims.widthPx96, height: dims.heightPx96 })
       canvas.requestRenderAll()
+      const cont = containerRef.current
+      if (cont) fitToViewport(canvas, cont.offsetWidth, cont.offsetHeight)
     }
   }
 
-  // Add element helpers — centred on canvas
+  // Add element helpers
   function addText() {
     const canvas = fabricCanvasRef.current
     if (!canvas) return
@@ -314,29 +374,14 @@ export default function Editor() {
     canvas.add(l); canvas.setActiveObject(l); canvas.requestRenderAll()
   }
 
-  function addImagePlaceholder() {
-    const canvas = fabricCanvasRef.current
-    if (!canvas) return
-    const W = 180, H = 120
-    const bg = new Rect({ width: W, height: H, fill: '#f0f0f0', stroke: '#aaa', strokeWidth: 1.5, strokeDashArray: [6, 4], originX: 'center', originY: 'center' })
-    const lbl = new FabricText('Drop image here', { fontSize: 12, fill: '#aaa', originX: 'center', originY: 'center', selectable: false, evented: false })
-    const group = new Group([bg, lbl], { ...centrePos(canvas, W, H) })
-    Object.assign(group, { data: { type: 'image-placeholder' } })
-    canvas.add(group); canvas.setActiveObject(group); canvas.requestRenderAll()
-  }
+  const dims = receiptsPerPage > 1
+    ? getSlotDimensions(paperSize, orientation, receiptsPerPage, designStore.customSize)
+    : getPaperDimensions(paperSize, orientation, designStore.customSize)
 
-  function addBlankField() {
-    const canvas = fabricCanvasRef.current
-    if (!canvas) return
-    const W = 200
-    const lbl = new FabricText('Name:', { fontSize: 11, fill: '#555', left: 0, top: 0, selectable: false, evented: false })
-    const ln = new Line([0, 22, W, 22], { stroke: '#1A1A1A', strokeWidth: 1, left: 0, top: 0, selectable: false, evented: false })
-    const group = new Group([lbl, ln], { ...centrePos(canvas, W, 30) })
-    Object.assign(group, { data: { type: 'blank-field', label: 'Name' } })
-    canvas.add(group); canvas.setActiveObject(group); canvas.requestRenderAll()
-  }
+  const pdfPages = Math.ceil(numbering.total / receiptsPerPage)
 
-  const dims = getPaperDimensions(paperSize, orientation, designStore.customSize)
+  // Numbering preview
+  const numberingPreview = generateNumbers({ ...numberingStore, total: 3 }).join(', ')
 
   if (isMobile) {
     return (
@@ -395,14 +440,25 @@ export default function Editor() {
           {saving ? 'Saving…' : saveMsg || 'Save'}
         </button>
 
-        <button
-          type="button"
-          onClick={handleExport}
-          disabled={exporting}
-          className="bg-krb-orange text-white rounded-lg px-4 py-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50"
-        >
-          {exporting ? 'Exporting…' : 'Export PDF'}
-        </button>
+        <div className="flex items-center gap-1">
+          <select
+            value={exportFormat}
+            onChange={(e) => setExportFormat(e.target.value as 'pdf' | 'png')}
+            title="Export format"
+            className="border border-krb-rule rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-krb-navy"
+          >
+            <option value="pdf">PDF</option>
+            <option value="png">PNG</option>
+          </select>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            className="bg-krb-orange text-white rounded-lg px-4 py-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50"
+          >
+            {exporting ? 'Exporting…' : `Export ${exportFormat.toUpperCase()}`}
+          </button>
+        </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
@@ -418,19 +474,63 @@ export default function Editor() {
           </button>
           <button type="button" onClick={addText} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Text</button>
           <button type="button" onClick={addRect} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Rectangle</button>
+          <button type="button" onClick={() => fabricCanvasRef.current && addCircle(fabricCanvasRef.current)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Circle</button>
           <button type="button" onClick={addLine} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Line</button>
-          <button type="button" onClick={addImagePlaceholder} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Image placeholder</button>
-          <button type="button" onClick={addBlankField} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg mb-2">+ Blank field</button>
+          <button type="button" onClick={() => fabricCanvasRef.current && addHighlight(fabricCanvasRef.current)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Highlight</button>
+          <button type="button" onClick={() => fabricCanvasRef.current && addImagePlaceholder(fabricCanvasRef.current)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Image placeholder</button>
+          <button type="button" onClick={() => fabricCanvasRef.current && addBlankField(fabricCanvasRef.current)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Blank field</button>
 
-          <div className="text-xs text-krb-ink3 mt-1 mb-3 px-1">
-            Del/Backspace — delete · Ctrl+D — duplicate · Ctrl+Z/Y — undo/redo
+          {/* Table button + inline config */}
+          <div className="relative mb-1">
+            <button type="button" onClick={() => setShowTableConfig((v) => !v)} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-krb-bg">+ Table</button>
+            {showTableConfig && (
+              <div className="absolute left-0 top-full mt-1 bg-white border border-krb-rule rounded-xl shadow-xl p-3 z-50 w-44">
+                <div className="text-xs font-semibold text-krb-ink3 mb-2">Table size</div>
+                <div className="flex gap-2 mb-2">
+                  <div className="flex-1">
+                    <label className="text-xs text-krb-ink3 block mb-0.5">Rows</label>
+                    <input type="number" min={1} max={20} value={tableRows}
+                      onChange={(e) => setTableRows(Number(e.target.value))}
+                      title="Table rows"
+                      className="w-full border border-krb-rule rounded px-2 py-1 text-sm focus:outline-none" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-xs text-krb-ink3 block mb-0.5">Cols</label>
+                    <input type="number" min={1} max={20} value={tableCols}
+                      onChange={(e) => setTableCols(Number(e.target.value))}
+                      title="Table columns"
+                      className="w-full border border-krb-rule rounded px-2 py-1 text-sm focus:outline-none" />
+                  </div>
+                </div>
+                <button type="button"
+                  onClick={() => {
+                    if (fabricCanvasRef.current) addTable(fabricCanvasRef.current, tableRows, tableCols)
+                    setShowTableConfig(false)
+                  }}
+                  className="w-full bg-krb-orange text-white rounded-lg py-1.5 text-xs font-semibold">
+                  Insert Table
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="text-xs text-krb-ink3 mt-1 mb-3 px-1 leading-relaxed">
+            Del — delete · Ctrl+D — dup · Ctrl+scroll — zoom · Space+drag — pan
           </div>
 
           {/* Page */}
           <div className="border-t border-krb-rule pt-3 mt-1">
             <div className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider mb-2">Page</div>
-            <div className="text-xs text-krb-ink3 mb-2 leading-relaxed">
-              {paperSize} · {dims.widthMm.toFixed(0)} × {dims.heightMm.toFixed(0)} mm · {orientation}
+            <div className="text-xs text-krb-ink3 mb-1 leading-relaxed">
+              {paperSize} · {dims.widthMm.toFixed(0)} × {dims.heightMm.toFixed(0)} mm
+            </div>
+            {receiptsPerPage > 1 && (
+              <div className="text-xs text-krb-ink3 mb-1">
+                {receiptsPerPage}-up layout
+              </div>
+            )}
+            <div className="text-xs text-krb-ink3 mb-2">
+              {numbering.total} receipts ÷ {receiptsPerPage}/page = <strong className="text-krb-ink">{pdfPages} PDF pages</strong>
             </div>
             <button type="button" onClick={() => setShowSetupDialog(true)}
               className="w-full border border-krb-rule rounded-lg px-3 py-1.5 text-xs hover:bg-krb-bg mb-3">
@@ -450,7 +550,7 @@ export default function Editor() {
 
             {designStore.bindingType === 'wire-o' && (
               <div className="mt-2 text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1.5">
-                Wire-O binding: keep content 8 mm from left edge (spine side).
+                Wire-O: keep content 8 mm from left edge.
               </div>
             )}
             {designStore.bindingType === 'saddle' && numbering.total % 4 !== 0 && (
@@ -463,14 +563,20 @@ export default function Editor() {
           {/* Numbering */}
           <div className="border-t border-krb-rule pt-3 mt-3">
             <div className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider mb-2">Numbering</div>
+
+            <label className="flex items-center gap-2 text-sm cursor-pointer mb-3">
+              <input type="checkbox" checked={numberingStore.numberingEnabled}
+                onChange={(e) => numberingStore.setNumberingEnabled(e.target.checked)} className="rounded" />
+              Enable numbering
+            </label>
+
             <div className="space-y-2">
               {[
                 { label: 'Prefix', key: 'prefix', type: 'text' as const },
                 { label: 'Start', key: 'start', type: 'number' as const },
-                { label: 'Digits', key: 'digits', type: 'number' as const },
                 { label: 'Step', key: 'step', type: 'number' as const },
                 { label: 'Suffix', key: 'suffix', type: 'text' as const },
-                { label: 'Total pages', key: 'total', type: 'number' as const },
+                { label: 'Total receipts', key: 'total', type: 'number' as const },
               ].map(({ label, key, type }) => (
                 <div key={key}>
                   <label htmlFor={`num-${key}`} className="text-xs text-krb-ink3 block mb-0.5">{label}</label>
@@ -484,26 +590,80 @@ export default function Editor() {
                   />
                 </div>
               ))}
+
+              {/* Format dropdown */}
+              <div>
+                <label htmlFor="num-format" className="text-xs text-krb-ink3 block mb-0.5">Format</label>
+                <select
+                  id="num-format"
+                  value={numberingStore.digits}
+                  onChange={(e) => numberingStore.setConfig({ digits: Number(e.target.value) })}
+                  className="w-full border border-krb-rule rounded px-2 py-1 text-sm focus:outline-none focus:border-krb-navy"
+                >
+                  <option value={1}>1, 2, 3 …</option>
+                  <option value={2}>01, 02, 03 …</option>
+                  <option value={3}>001, 002, 003 …</option>
+                  <option value={4}>0001, 0002 … (default)</option>
+                  <option value={5}>00001, 00002 …</option>
+                </select>
+              </div>
+
+              {/* Live preview */}
+              <div className="text-xs font-mono bg-krb-bg rounded px-2 py-1.5 text-krb-ink3 break-all">
+                {numberingPreview}
+              </div>
             </div>
           </div>
         </aside>
 
         {/* Canvas area */}
-        <div className="flex-1 overflow-auto bg-slate-200 flex items-start justify-center p-8">
+        <div ref={containerRef} className="flex-1 overflow-auto bg-slate-200 flex items-start justify-center p-8 relative">
           <div className="shadow-xl">
             <canvas ref={canvasElRef} />
           </div>
+          <ZoomControls
+            zoom={zoom}
+            onZoomIn={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() * 1.2)}
+            onZoomOut={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() / 1.2)}
+            onFit={() => {
+              const canvas = fabricCanvasRef.current
+              const cont = containerRef.current
+              if (canvas && cont) fitToViewport(canvas, cont.offsetWidth, cont.offsetHeight)
+            }}
+          />
         </div>
 
-        {/* Right: properties panel */}
-        <PropertiesPanel
-          canvas={fabricCanvas}
-          selectedObj={selectedObj}
-          onChanged={() => {
-            const canvas = fabricCanvasRef.current
-            if (canvas) designStore.pushHistory(serializeCanvas(canvas))
-          }}
-        />
+        {/* Right panel: Properties | Layers tabs */}
+        <aside className="w-56 bg-white border-l border-krb-rule flex flex-col shrink-0">
+          <div className="flex border-b border-krb-rule">
+            <button
+              type="button"
+              onClick={() => setRightTab('properties')}
+              className={`flex-1 py-2 text-xs font-semibold border-b-2 transition-colors ${rightTab === 'properties' ? 'text-krb-navy border-krb-navy' : 'text-krb-ink3 border-transparent hover:text-krb-ink'}`}
+            >Properties</button>
+            <button
+              type="button"
+              onClick={() => setRightTab('layers')}
+              className={`flex-1 py-2 text-xs font-semibold border-b-2 transition-colors ${rightTab === 'layers' ? 'text-krb-navy border-krb-navy' : 'text-krb-ink3 border-transparent hover:text-krb-ink'}`}
+            >Layers</button>
+          </div>
+          {rightTab === 'properties' ? (
+            <PropertiesPanel
+              canvas={fabricCanvas}
+              selectedObj={selectedObj}
+              onChanged={() => {
+                const canvas = fabricCanvasRef.current
+                if (canvas) designStore.pushHistory(serializeCanvas(canvas))
+              }}
+            />
+          ) : (
+            <LayersPanel
+              canvas={fabricCanvas}
+              selectedObj={selectedObj}
+              onSelectionChange={setSelectedObj}
+            />
+          )}
+        </aside>
       </div>
 
       {/* Dialogs */}
@@ -520,6 +680,7 @@ export default function Editor() {
             bleedEnabled: designStore.bleedEnabled,
             showSafeZone: designStore.showSafeZone,
             bindingType: designStore.bindingType,
+            receiptsPerPage,
           }}
           onConfirm={handlePageSetupConfirm}
           onClose={() => setShowSetupDialog(false)}
