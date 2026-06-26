@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+@theme {
+  --color-krb-navy: #1A3A5C;
+  --color-krb-orange: #E85D24;
+  --color-krb-bg: #FAFAF8;
+  --color-krb-ink: #1A1A1A;
+  --color-krb-ink2: #4A4A4A;
+  --color-krb-ink3: #7A7A7A;
+  --color-krb-rule: #E8E5E0;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #FAFAF8;
+  color: #1A1A1A;
+  font-family: system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100svh;
+}

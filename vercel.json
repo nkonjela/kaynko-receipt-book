@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/ai/generate-receipt.ts": { "maxDuration": 30 },
+    "api/stripe/create-checkout.ts": { "maxDuration": 10 },
+    "api/stripe/webhook.ts": { "maxDuration": 10 }
+  },
+  "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }]
+}

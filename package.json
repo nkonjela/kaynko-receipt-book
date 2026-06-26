@@ -1,0 +1,46 @@
+{
+  "name": "krb",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test": "vitest run",
+    "test:ui": "vitest --ui",
+    "test:pdf": "vitest run src/lib/pdf.test.ts --reporter=verbose",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "@stripe/stripe-js": "^9.8.0",
+    "@supabase/supabase-js": "^2.108.2",
+    "fabric": "^7.4.0",
+    "pdf-lib": "^1.17.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.18.0",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^24.13.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "^4.1.9",
+    "@vitest/ui": "^4.1.9",
+    "autoprefixer": "^10.5.2",
+    "jsdom": "^29.1.1",
+    "oxlint": "^1.69.0",
+    "playwright": "^1.61.1",
+    "postcss": "^8.5.15",
+    "stripe": "^22.3.0",
+    "tailwindcss": "^4.3.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.0",
+    "vitest": "^4.1.9"
+  }
+}
