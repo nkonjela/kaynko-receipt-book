@@ -4,7 +4,7 @@ import type { Canvas as FabricCanvas, FabricObject } from 'fabric'
 import { Textbox, Rect, Line, ActiveSelection } from 'fabric'
 import {
   initCanvas, serializeCanvas, loadCanvas, addNumberField,
-  attachZoomPan, applyZoom, fitToViewport,
+  attachZoomPan, applyZoom, fitToViewport, updateCanvasData,
   addCircle, addHighlight, addTable,
   addImagePlaceholder, addBlankField,
   centrePos,
@@ -14,6 +14,7 @@ import { getPaperDimensions, getSlotDimensions } from '@/lib/paperSizes'
 import { generateNumbers } from '@/lib/numbering'
 import { supabase } from '@/lib/supabase'
 import { useDesignStore } from '@/store/designStore'
+import type { PerforationLine } from '@/store/designStore'
 import { useNumberingStore } from '@/store/numberingStore'
 import { useUserStore } from '@/store/userStore'
 import { maxPagesForTier, canExportWithoutWatermark } from '@/lib/featureGate'
@@ -23,6 +24,8 @@ import CanvasContextMenu from '@/components/Editor/CanvasContextMenu'
 import PageSetupDialog, { type PageSetupSettings } from '@/components/Editor/PageSetupDialog'
 import ZoomControls from '@/components/Editor/ZoomControls'
 import LayersPanel from '@/components/Editor/LayersPanel'
+import { RulerH, RulerV } from '@/components/Editor/Ruler'
+import PreviewModal from '@/components/Editor/PreviewModal'
 
 export default function Editor() {
   const { designId } = useParams()
@@ -31,16 +34,20 @@ export default function Editor() {
   const canvasElRef = useRef<HTMLCanvasElement>(null)
   const fabricCanvasRef = useRef<FabricCanvas | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const canvasAreaRef = useRef<HTMLDivElement>(null)
 
   const [fabricCanvas, setFabricCanvas] = useState<FabricCanvas | null>(null)
   const [selectedObj, setSelectedObj] = useState<FabricObject | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; target: FabricObject } | null>(null)
   const [showAIDialog, setShowAIDialog] = useState(false)
   const [showSetupDialog, setShowSetupDialog] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
   const [saving, setSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
   const [zoom, setZoom] = useState(1.0)
+  const [viewportTransform, setViewportTransform] = useState<number[]>([1, 0, 0, 1, 0, 0])
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   const [rightTab, setRightTab] = useState<'properties' | 'layers'>('properties')
   const [exportFormat, setExportFormat] = useState<'pdf' | 'png'>('pdf')
   const [showTableConfig, setShowTableConfig] = useState(false)
@@ -56,6 +63,7 @@ export default function Editor() {
   const paperSize = designStore.paperSize
   const orientation = designStore.orientation
   const receiptsPerPage = designStore.receiptsPerPage
+  const twoUpOrientation = designStore.twoUpOrientation
   const numbering = numberingStore
 
   useEffect(() => {
@@ -64,18 +72,45 @@ export default function Editor() {
     return () => window.removeEventListener('resize', handler)
   }, [])
 
+  // Sync perforation lines + binding side into canvas data whenever they change
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+    updateCanvasData(canvas, {
+      perforationLines: designStore.perforationLines,
+      bindingSide: designStore.bindingSide,
+    })
+  }, [designStore.perforationLines, designStore.bindingSide])
+
   // Init Fabric canvas
   useEffect(() => {
     const el = canvasElRef.current
     if (!el) return
 
-    const canvas = initCanvas(el, paperSize, orientation, designStore.customSize, receiptsPerPage)
+    const canvas = initCanvas(
+      el, paperSize, orientation, designStore.customSize, receiptsPerPage,
+      { bindingSide: designStore.bindingSide, perforationLines: designStore.perforationLines },
+    )
     fabricCanvasRef.current = canvas
     setFabricCanvas(canvas)
 
+    // Position .canvas-container to fill the canvas area
+    const canvasContainer = el.parentElement
+    if (canvasContainer) {
+      Object.assign(canvasContainer.style, {
+        position: 'absolute',
+        top: '0',
+        left: '0',
+        zIndex: '1',
+      })
+    }
+
     const cleanupZoomPan = attachZoomPan(canvas)
 
-    canvas.on('after:render', () => setZoom(canvas.getZoom()))
+    canvas.on('after:render', () => {
+      setZoom(canvas.getZoom())
+      setViewportTransform([...(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0])])
+    })
 
     canvas.on('object:modified', () => {
       const json = serializeCanvas(canvas)
@@ -103,14 +138,29 @@ export default function Editor() {
     const preventCtx = (e: Event) => e.preventDefault()
     wrapper?.addEventListener('contextmenu', preventCtx)
 
-    // Fit on first load
+    // ResizeObserver: fit canvas to container whenever container size changes
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect
+        if (width > 0 && height > 0) {
+          setContainerSize({ w: width, h: height })
+          fitToViewport(canvas, width, height)
+        }
+      }
+    })
+    if (canvasAreaRef.current) ro.observe(canvasAreaRef.current)
+
+    // Initial fit after layout settles
     requestAnimationFrame(() => {
-      const cont = containerRef.current
-      if (cont) fitToViewport(canvas, cont.offsetWidth, cont.offsetHeight)
+      const area = canvasAreaRef.current
+      if (area && area.offsetWidth > 0) {
+        fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
+      }
     })
 
     return () => {
       wrapper?.removeEventListener('contextmenu', preventCtx)
+      ro.disconnect()
       cleanupZoomPan()
       canvas.dispose()
     }
@@ -214,8 +264,8 @@ export default function Editor() {
       }
       if (e.ctrlKey && e.key === '0') {
         e.preventDefault()
-        const cont = containerRef.current
-        if (cont) fitToViewport(canvas, cont.offsetWidth, cont.offsetHeight)
+        const area = canvasAreaRef.current
+        if (area) fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
         return
       }
 
@@ -280,6 +330,8 @@ export default function Editor() {
       cmyk: false,
       receiptsPerPage,
       numberingEnabled: numberingStore.numberingEnabled,
+      twoUpOrientation,
+      perforationLines: designStore.perforationLines,
       numbering: { ...numberingStore, total },
       canvasObjects: fabricCanvas.getObjects().map((obj) => {
         const o = obj as unknown as Record<string, unknown>
@@ -336,18 +388,23 @@ export default function Editor() {
     store.setBleedEnabled(settings.bleedEnabled)
     store.setShowSafeZone(settings.showSafeZone)
     store.setBindingType(settings.bindingType)
+    store.setBindingSide(settings.bindingSide)
+    store.setTwoUpOrientation(settings.twoUpOrientation)
     store.setReceiptsPerPage(settings.receiptsPerPage)
     setShowSetupDialog(false)
 
     const canvas = fabricCanvasRef.current
     if (canvas) {
       const dims = settings.receiptsPerPage > 1
-        ? getSlotDimensions(settings.paperSize, settings.orientation, settings.receiptsPerPage, settings.customSize)
+        ? getSlotDimensions(settings.paperSize, settings.orientation, settings.receiptsPerPage, settings.customSize, settings.twoUpOrientation)
         : getPaperDimensions(settings.paperSize, settings.orientation, settings.customSize ?? undefined)
-      canvas.setDimensions({ width: dims.widthPx96, height: dims.heightPx96 })
-      canvas.requestRenderAll()
-      const cont = containerRef.current
-      if (cont) fitToViewport(canvas, cont.offsetWidth, cont.offsetHeight)
+      updateCanvasData(canvas, {
+        paperWidthPx: dims.widthPx96,
+        paperHeightPx: dims.heightPx96,
+        bindingSide: settings.bindingSide,
+      })
+      const area = canvasAreaRef.current
+      if (area) fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
     }
   }
 
@@ -375,13 +432,24 @@ export default function Editor() {
   }
 
   const dims = receiptsPerPage > 1
-    ? getSlotDimensions(paperSize, orientation, receiptsPerPage, designStore.customSize)
+    ? getSlotDimensions(paperSize, orientation, receiptsPerPage, designStore.customSize, twoUpOrientation)
     : getPaperDimensions(paperSize, orientation, designStore.customSize)
 
   const pdfPages = Math.ceil(numbering.total / receiptsPerPage)
 
   // Numbering preview
   const numberingPreview = generateNumbers({ ...numberingStore, total: 3 }).join(', ')
+
+  // Paper background rect position (driven by viewport transform)
+  const vt = viewportTransform
+  const paperDisplayW = dims.widthPx96 * vt[0]
+  const paperDisplayH = dims.heightPx96 * vt[3]
+  const paperLeft = vt[4]
+  const paperTop = vt[5]
+
+  // Ruler lengths (canvas area minus ruler thickness)
+  const rulerW = Math.max(0, containerSize.w - 20)
+  const rulerH = Math.max(0, containerSize.h - 20)
 
   if (isMobile) {
     return (
@@ -421,6 +489,16 @@ export default function Editor() {
           title="Page setup"
         >
           ⚙ Page
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowPreview(true)}
+          disabled={!fabricCanvas}
+          className="border border-krb-rule rounded-lg px-3 py-1.5 text-sm hover:bg-krb-bg flex items-center gap-1 disabled:opacity-40"
+          title="Preview full page layout"
+        >
+          ▣ Preview
         </button>
 
         <button
@@ -526,7 +604,7 @@ export default function Editor() {
             </div>
             {receiptsPerPage > 1 && (
               <div className="text-xs text-krb-ink3 mb-1">
-                {receiptsPerPage}-up layout
+                {receiptsPerPage}-up layout ({twoUpOrientation === 'h' ? 'side by side' : 'stacked'})
               </div>
             )}
             <div className="text-xs text-krb-ink3 mb-2">
@@ -548,9 +626,32 @@ export default function Editor() {
               Show safe zone
             </label>
 
+            {/* Binding side quick select */}
+            {designStore.bindingType !== 'none' && (
+              <div className="mt-3">
+                <div className="text-xs text-krb-ink3 mb-1">Binding edge</div>
+                <div className="grid grid-cols-4 gap-1">
+                  {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
+                    <button
+                      key={side}
+                      type="button"
+                      onClick={() => designStore.setBindingSide(side)}
+                      className={`py-1 rounded text-xs capitalize transition-colors border ${
+                        designStore.bindingSide === side
+                          ? 'bg-krb-navy text-white border-krb-navy'
+                          : 'border-krb-rule text-krb-ink3 hover:border-krb-navy'
+                      }`}
+                    >
+                      {side[0].toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {designStore.bindingType === 'wire-o' && (
               <div className="mt-2 text-xs text-amber-700 bg-amber-50 rounded-lg px-2 py-1.5">
-                Wire-O: keep content 8 mm from left edge.
+                Wire-O: keep content 8 mm from spine edge.
               </div>
             )}
             {designStore.bindingType === 'saddle' && numbering.total % 4 !== 0 && (
@@ -558,6 +659,90 @@ export default function Editor() {
                 Saddle stitch needs pages in multiples of 4. Currently: {numbering.total}.
               </div>
             )}
+          </div>
+
+          {/* Perforation Lines */}
+          <div className="border-t border-krb-rule pt-3 mt-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider">Perforation</div>
+              <button
+                type="button"
+                onClick={() => {
+                  const next: PerforationLine = { axis: 'h', positionMm: 50, style: 'dashes' }
+                  designStore.setPerforationLines([...designStore.perforationLines, next])
+                }}
+                className="text-xs text-krb-navy hover:underline"
+              >
+                + Add
+              </button>
+            </div>
+            {designStore.perforationLines.length === 0 && (
+              <p className="text-xs text-krb-ink3 leading-relaxed">
+                Add cut guides for hand-held perforators. Prints as dashes or corner marks.
+              </p>
+            )}
+            {designStore.perforationLines.map((line, idx) => (
+              <div key={idx} className="mb-2 p-2 border border-krb-rule rounded-lg space-y-1.5">
+                <div className="flex gap-1">
+                  {(['h', 'v'] as const).map((axis) => (
+                    <button
+                      key={axis}
+                      type="button"
+                      onClick={() => {
+                        const updated = [...designStore.perforationLines]
+                        updated[idx] = { ...updated[idx], axis }
+                        designStore.setPerforationLines(updated)
+                      }}
+                      className={`flex-1 py-0.5 rounded text-xs border transition-colors ${
+                        line.axis === axis ? 'bg-krb-navy text-white border-krb-navy' : 'border-krb-rule text-krb-ink3 hover:border-krb-navy'
+                      }`}
+                    >
+                      {axis === 'h' ? '─ H' : '│ V'}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-1 items-center">
+                  <input
+                    type="number"
+                    title="Position in mm"
+                    value={line.positionMm}
+                    min={0}
+                    step={1}
+                    onChange={(e) => {
+                      const updated = [...designStore.perforationLines]
+                      updated[idx] = { ...updated[idx], positionMm: Number(e.target.value) }
+                      designStore.setPerforationLines(updated)
+                    }}
+                    className="flex-1 border border-krb-rule rounded px-1.5 py-0.5 text-xs focus:outline-none focus:border-krb-navy"
+                  />
+                  <span className="text-xs text-krb-ink3">mm</span>
+                </div>
+                <div className="flex gap-1">
+                  <select
+                    title="Perforation style"
+                    value={line.style}
+                    onChange={(e) => {
+                      const updated = [...designStore.perforationLines]
+                      updated[idx] = { ...updated[idx], style: e.target.value as PerforationLine['style'] }
+                      designStore.setPerforationLines(updated)
+                    }}
+                    className="flex-1 border border-krb-rule rounded px-1 py-0.5 text-xs focus:outline-none focus:border-krb-navy"
+                  >
+                    <option value="dashes">Dashes</option>
+                    <option value="corner-marks">Corner marks</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated = designStore.perforationLines.filter((_, i) => i !== idx)
+                      designStore.setPerforationLines(updated)
+                    }}
+                    className="text-red-400 hover:text-red-600 text-xs px-1.5"
+                    title="Remove perforation line"
+                  >✕</button>
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Numbering */}
@@ -616,21 +801,66 @@ export default function Editor() {
           </div>
         </aside>
 
-        {/* Canvas area */}
-        <div ref={containerRef} className="flex-1 overflow-auto bg-slate-200 flex items-start justify-center p-8 relative">
-          <div className="shadow-xl">
-            <canvas ref={canvasElRef} />
+        {/* Canvas area with rulers */}
+        <div
+          ref={containerRef}
+          className="flex-1 overflow-hidden"
+          style={{ display: 'grid', gridTemplateColumns: '20px 1fr', gridTemplateRows: '20px 1fr' }}
+        >
+          {/* Corner square */}
+          <div className="bg-slate-300 z-10" style={{ borderRight: '1px solid #aaa', borderBottom: '1px solid #aaa' }} />
+
+          {/* Horizontal ruler */}
+          <div className="bg-slate-300 z-10 overflow-hidden" style={{ borderBottom: '1px solid #aaa' }}>
+            {rulerW > 0 && (
+              <RulerH
+                lengthPx={rulerW}
+                viewportTransform={viewportTransform}
+                paperSizeMm={dims.widthMm}
+              />
+            )}
           </div>
-          <ZoomControls
-            zoom={zoom}
-            onZoomIn={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() * 1.2)}
-            onZoomOut={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() / 1.2)}
-            onFit={() => {
-              const canvas = fabricCanvasRef.current
-              const cont = containerRef.current
-              if (canvas && cont) fitToViewport(canvas, cont.offsetWidth, cont.offsetHeight)
-            }}
-          />
+
+          {/* Vertical ruler */}
+          <div className="bg-slate-300 z-10 overflow-hidden" style={{ borderRight: '1px solid #aaa' }}>
+            {rulerH > 0 && (
+              <RulerV
+                lengthPx={rulerH}
+                viewportTransform={viewportTransform}
+                paperSizeMm={dims.heightMm}
+              />
+            )}
+          </div>
+
+          {/* Canvas area */}
+          <div ref={canvasAreaRef} className="relative overflow-hidden bg-slate-200">
+            {/* Paper background div — white rect positioned by viewport transform */}
+            <div
+              style={{
+                position: 'absolute',
+                left: paperLeft,
+                top: paperTop,
+                width: paperDisplayW,
+                height: paperDisplayH,
+                background: '#ffffff',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.18), 0 1px 4px rgba(0,0,0,0.12)',
+                zIndex: 0,
+                pointerEvents: 'none',
+              }}
+            />
+            {/* Fabric canvas */}
+            <canvas ref={canvasElRef} />
+            <ZoomControls
+              zoom={zoom}
+              onZoomIn={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() * 1.2)}
+              onZoomOut={() => fabricCanvasRef.current && applyZoom(fabricCanvasRef.current, fabricCanvasRef.current.getZoom() / 1.2)}
+              onFit={() => {
+                const canvas = fabricCanvasRef.current
+                const area = canvasAreaRef.current
+                if (canvas && area) fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
+              }}
+            />
+          </div>
         </div>
 
         {/* Right panel: Properties | Layers tabs */}
@@ -680,10 +910,21 @@ export default function Editor() {
             bleedEnabled: designStore.bleedEnabled,
             showSafeZone: designStore.showSafeZone,
             bindingType: designStore.bindingType,
+            bindingSide: designStore.bindingSide,
+            twoUpOrientation,
             receiptsPerPage,
           }}
           onConfirm={handlePageSetupConfirm}
           onClose={() => setShowSetupDialog(false)}
+        />
+      )}
+      {showPreview && fabricCanvas && (
+        <PreviewModal
+          canvas={fabricCanvas}
+          receiptsPerPage={receiptsPerPage}
+          twoUpOrientation={twoUpOrientation}
+          orientation={orientation}
+          onClose={() => setShowPreview(false)}
         />
       )}
       {contextMenu && fabricCanvas && (

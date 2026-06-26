@@ -3,7 +3,7 @@ import { getPaperDimensions, getSlotGrid, mmToPt } from '@/lib/paperSizes'
 import type { ReceiptsPerPage } from '@/lib/paperSizes'
 import { generateNumbers } from '@/lib/numbering'
 import type { NumberingConfig } from '@/lib/numbering'
-import type { PaperSizeName, Orientation } from '@/store/designStore'
+import type { PaperSizeName, Orientation, PerforationLine } from '@/store/designStore'
 
 export interface Box {
   x: number
@@ -38,6 +38,8 @@ export interface ExportConfig {
   customSize?: { widthMm: number; heightMm: number } | null
   receiptsPerPage?: ReceiptsPerPage
   numberingEnabled?: boolean
+  twoUpOrientation?: 'h' | 'v'
+  perforationLines?: PerforationLine[]
 }
 
 export function mmToCropPt(mm: number): number {
@@ -159,6 +161,62 @@ function drawSlotDividers(page: PDFPage, trimBox: Box, cols: number, rows: numbe
   }
 }
 
+function drawPerforationLinesPDF(
+  page: PDFPage,
+  trimBox: Box,
+  lines: PerforationLine[],
+): void {
+  const MM_TO_PT = 72 / 25.4
+  for (const line of lines) {
+    const posPt = line.positionMm * MM_TO_PT
+    const gray = rgb(0.5, 0.5, 0.5)
+    if (line.style === 'dashes') {
+      // Draw dashed line across the trim area
+      const dashLen = 4
+      const gapLen = 3
+      if (line.axis === 'h') {
+        // Horizontal line at posPt from bottom of trim box
+        const y = trimBox.y + posPt
+        let x = trimBox.x
+        while (x < trimBox.x + trimBox.width) {
+          page.drawLine({
+            start: { x, y },
+            end: { x: Math.min(x + dashLen, trimBox.x + trimBox.width), y },
+            thickness: 0.5,
+            color: gray,
+          })
+          x += dashLen + gapLen
+        }
+      } else {
+        // Vertical line at posPt from left of trim box
+        const x = trimBox.x + posPt
+        let y = trimBox.y
+        while (y < trimBox.y + trimBox.height) {
+          page.drawLine({
+            start: { x, y },
+            end: { x, y: Math.min(y + dashLen, trimBox.y + trimBox.height) },
+            thickness: 0.5,
+            color: gray,
+          })
+          y += dashLen + gapLen
+        }
+      }
+    } else {
+      // Corner marks only
+      const tickLen = 8
+      if (line.axis === 'h') {
+        const y = trimBox.y + posPt
+        page.drawLine({ start: { x: trimBox.x, y }, end: { x: trimBox.x + tickLen, y }, thickness: 0.5, color: gray })
+        page.drawLine({ start: { x: trimBox.x + trimBox.width - tickLen, y }, end: { x: trimBox.x + trimBox.width, y }, thickness: 0.5, color: gray })
+      } else {
+        const x = trimBox.x + posPt
+        page.drawLine({ start: { x, y: trimBox.y }, end: { x, y: trimBox.y + tickLen }, thickness: 0.5, color: gray })
+        page.drawLine({ start: { x, y: trimBox.y + trimBox.height - tickLen }, end: { x, y: trimBox.y + trimBox.height }, thickness: 0.5, color: gray })
+      }
+    }
+  }
+}
+
 function parseColor(fill?: string): ReturnType<typeof rgb> {
   if (!fill || fill === 'transparent') return rgb(0, 0, 0)
   if (fill.startsWith('#')) {
@@ -177,6 +235,8 @@ export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
     numbering, canvasObjects, customSize,
     receiptsPerPage = 1,
     numberingEnabled = true,
+    twoUpOrientation = 'v',
+    perforationLines = [],
   } = config
 
   const dims = getPaperDimensions(paperSize, orientation, customSize)
@@ -195,7 +255,7 @@ export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
     height: trimHeightPt,
   }
 
-  const { cols, rows } = getSlotGrid(receiptsPerPage, orientation)
+  const { cols, rows } = getSlotGrid(receiptsPerPage, orientation, twoUpOrientation)
   const slotWPt = trimWidthPt / cols
   const slotHPt = trimHeightPt / rows
   const pdfPageCount = Math.ceil(numbering.total / receiptsPerPage)
@@ -238,6 +298,10 @@ export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
 
     if (receiptsPerPage > 1) {
       drawSlotDividers(page, trimBox, cols, rows)
+    }
+
+    if (perforationLines.length > 0) {
+      drawPerforationLinesPDF(page, trimBox, perforationLines)
     }
 
     if (cropMarks) {

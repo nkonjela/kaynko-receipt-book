@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { PaperSizeName, Orientation, BindingType, CustomSize, ReceiptsPerPage } from '@/store/designStore'
+import type { PaperSizeName, Orientation, BindingType, BindingSide, CustomSize, ReceiptsPerPage } from '@/store/designStore'
 
 export interface PageSetupSettings {
   paperSize: PaperSizeName
@@ -8,6 +8,8 @@ export interface PageSetupSettings {
   bleedEnabled: boolean
   showSafeZone: boolean
   bindingType: BindingType
+  bindingSide: BindingSide
+  twoUpOrientation: 'h' | 'v'
   receiptsPerPage: ReceiptsPerPage
 }
 
@@ -99,6 +101,8 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
   const [bleedEnabled, setBleedEnabled] = useState(initialSettings?.bleedEnabled ?? true)
   const [showSafeZone, setShowSafeZone] = useState(initialSettings?.showSafeZone ?? true)
   const [bindingType, setBindingType] = useState<BindingType>(initialSettings?.bindingType ?? 'pad')
+  const [bindingSide, setBindingSide] = useState<BindingSide>(initialSettings?.bindingSide ?? 'bottom')
+  const [twoUpOrientation, setTwoUpOrientation] = useState<'h' | 'v'>(initialSettings?.twoUpOrientation ?? 'v')
   const [receiptsPerPage, setReceiptsPerPage] = useState<ReceiptsPerPage>(initialSettings?.receiptsPerPage ?? 1)
   const [widthInput, setWidthInput] = useState(toUnit(148, 'mm'))
   const [heightInput, setHeightInput] = useState(toUnit(210, 'mm'))
@@ -174,6 +178,8 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
       bleedEnabled,
       showSafeZone,
       bindingType,
+      bindingSide,
+      twoUpOrientation,
       receiptsPerPage,
     })
   }
@@ -213,6 +219,33 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
               <p className="text-xs text-krb-ink3 mt-2 bg-krb-bg rounded-lg px-3 py-2">
                 You&apos;ll design one receipt slot — the PDF will tile {receiptsPerPage} copies per page automatically.
               </p>
+            )}
+            {receiptsPerPage === 2 && (
+              <div className="mt-3">
+                <label className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider block mb-2">2-up Arrangement</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTwoUpOrientation('v')}
+                    className={`flex-1 flex flex-col items-center gap-1.5 py-2.5 rounded-xl border-2 transition-colors text-xs font-medium ${
+                      twoUpOrientation === 'v' ? 'border-krb-navy bg-krb-navy/5 text-krb-navy' : 'border-krb-rule text-krb-ink3 hover:border-krb-navy/40'
+                    }`}
+                  >
+                    <svg width="24" height="28" viewBox="0 0 24 28"><rect x="2" y="1" width="20" height="12" rx="2" fill="currentColor" opacity="0.7"/><rect x="2" y="15" width="20" height="12" rx="2" fill="currentColor" opacity="0.4"/></svg>
+                    Stacked
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTwoUpOrientation('h')}
+                    className={`flex-1 flex flex-col items-center gap-1.5 py-2.5 rounded-xl border-2 transition-colors text-xs font-medium ${
+                      twoUpOrientation === 'h' ? 'border-krb-navy bg-krb-navy/5 text-krb-navy' : 'border-krb-rule text-krb-ink3 hover:border-krb-navy/40'
+                    }`}
+                  >
+                    <svg width="28" height="24" viewBox="0 0 28 24"><rect x="1" y="2" width="12" height="20" rx="2" fill="currentColor" opacity="0.7"/><rect x="15" y="2" width="12" height="20" rx="2" fill="currentColor" opacity="0.4"/></svg>
+                    Side by Side
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 
@@ -352,6 +385,30 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
               <p className="text-xs text-amber-600 mt-1.5 bg-amber-50 rounded-lg px-3 py-2">
                 Wire-O binding punches holes 6 mm from the left edge. Keep all text and logos at least 8 mm from the spine side.
               </p>
+            )}
+            {bindingType !== 'none' && (
+              <div className="mt-3">
+                <label className="text-xs font-semibold text-krb-ink3 uppercase tracking-wider block mb-2">Binding Edge</label>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
+                    <button
+                      key={side}
+                      type="button"
+                      onClick={() => setBindingSide(side)}
+                      className={`py-1.5 rounded-lg border-2 text-xs font-medium capitalize transition-colors ${
+                        bindingSide === side
+                          ? 'border-krb-navy bg-krb-navy/5 text-krb-navy'
+                          : 'border-krb-rule text-krb-ink3 hover:border-krb-navy/40'
+                      }`}
+                    >
+                      {side}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-krb-ink3 mt-1.5">
+                  A guide stripe will mark the binding edge on your canvas.
+                </p>
+              </div>
             )}
           </div>
         </div>

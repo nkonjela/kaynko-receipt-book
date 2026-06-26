@@ -61,9 +61,13 @@ export function getPaperDimensions(
   return base
 }
 
-export function getSlotGrid(rpp: ReceiptsPerPage, orientation: Orientation): { cols: number; rows: number } {
+export function getSlotGrid(
+  rpp: ReceiptsPerPage,
+  _orientation: Orientation,
+  twoUpOrientation: 'h' | 'v' = 'v',
+): { cols: number; rows: number } {
   if (rpp === 1) return { cols: 1, rows: 1 }
-  if (rpp === 2) return orientation === 'landscape' ? { cols: 2, rows: 1 } : { cols: 1, rows: 2 }
+  if (rpp === 2) return twoUpOrientation === 'h' ? { cols: 2, rows: 1 } : { cols: 1, rows: 2 }
   if (rpp === 4) return { cols: 2, rows: 2 }
   if (rpp === 6) return { cols: 3, rows: 2 }
   return { cols: 4, rows: 2 }  // 8
@@ -74,9 +78,10 @@ export function getSlotDimensions(
   orientation: Orientation,
   rpp: ReceiptsPerPage,
   custom?: CustomSize | null,
+  twoUpOrientation: 'h' | 'v' = 'v',
 ): PaperDimensions {
   const paper = getPaperDimensions(size, orientation, custom)
-  const { cols, rows } = getSlotGrid(rpp, orientation)
+  const { cols, rows } = getSlotGrid(rpp, orientation, twoUpOrientation)
   return mmToDim(paper.widthMm / cols, paper.heightMm / rows)
 }
 

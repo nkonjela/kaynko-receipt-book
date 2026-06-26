@@ -4,7 +4,7 @@ import { getPaperDimensions, getSlotDimensions } from '@/lib/paperSizes'
 import type { ReceiptsPerPage } from '@/lib/paperSizes'
 import { computeGuides, drawGuides } from '@/lib/guides'
 import type { GuideLineSpec } from '@/lib/guides'
-import type { PaperSizeName, Orientation, CustomSize } from '@/store/designStore'
+import type { PaperSizeName, Orientation, CustomSize, PerforationLine, BindingSide } from '@/store/designStore'
 
 export const SCHEMA_VERSION = 1
 const SNAP_SIZE = 10
@@ -15,14 +15,21 @@ export interface KRBCanvasData {
   schemaVersion: number
   paperSize?: PaperSizeName
   orientation?: Orientation
+  paperWidthPx: number
+  paperHeightPx: number
+  bindingSide: BindingSide
+  perforationLines: PerforationLine[]
 }
 
 type AnnotatedCanvas = Canvas & { data: KRBCanvasData }
 
 export function centrePos(canvas: Canvas, objW: number, objH: number) {
+  const data = (canvas as AnnotatedCanvas).data
+  const w = data?.paperWidthPx ?? canvas.width
+  const h = data?.paperHeightPx ?? canvas.height
   return {
-    left: Math.round(canvas.width / 2 - objW / 2),
-    top: Math.round(canvas.height / 2 - objH / 2),
+    left: Math.round(w / 2 - objW / 2),
+    top: Math.round(h / 2 - objH / 2),
   }
 }
 
@@ -33,11 +40,24 @@ export function applyZoom(canvas: Canvas, zoom: number, centre?: Point): void {
 }
 
 export function fitToViewport(canvas: Canvas, containerW: number, containerH: number): void {
-  const scale = Math.min(containerW / canvas.width, containerH / canvas.height) * 0.9
-  const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale))
-  const offsetX = (containerW - canvas.width * z) / 2
-  const offsetY = (containerH - canvas.height * z) / 2
+  if (containerW <= 0 || containerH <= 0) return
+  const data = (canvas as AnnotatedCanvas).data
+  const paperW = data?.paperWidthPx ?? canvas.width
+  const paperH = data?.paperHeightPx ?? canvas.height
+  // Resize the HTML canvas element to fill the container (removes scrollbars)
+  canvas.setDimensions({ width: containerW, height: containerH })
+  // Scale paper to fit with ~10% padding on each side
+  const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM,
+    Math.min((containerW * 0.88) / paperW, (containerH * 0.88) / paperH)))
+  const offsetX = (containerW - paperW * z) / 2
+  const offsetY = (containerH - paperH * z) / 2
   canvas.setViewportTransform([z, 0, 0, z, offsetX, offsetY])
+}
+
+export function updateCanvasData(canvas: Canvas, updates: Partial<KRBCanvasData>): void {
+  const data = (canvas as AnnotatedCanvas).data
+  if (data) Object.assign(data, updates)
+  canvas.requestRenderAll()
 }
 
 export function attachZoomPan(canvas: Canvas): () => void {
@@ -111,12 +131,101 @@ export function attachZoomPan(canvas: Canvas): () => void {
   }
 }
 
+function drawBindingEdge(
+  ctx: CanvasRenderingContext2D,
+  vt: number[],
+  paperW: number,
+  paperH: number,
+  side: BindingSide,
+): void {
+  ctx.save()
+  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
+  const z = vt[0] || 1
+  const stripe = 10 / z
+
+  ctx.fillStyle = 'rgba(26,58,92,0.10)'
+  if (side === 'left') ctx.fillRect(0, 0, stripe, paperH)
+  else if (side === 'right') ctx.fillRect(paperW - stripe, 0, stripe, paperH)
+  else if (side === 'top') ctx.fillRect(0, 0, paperW, stripe)
+  else ctx.fillRect(0, paperH - stripe, paperW, stripe)
+
+  ctx.fillStyle = 'rgba(26,58,92,0.45)'
+  ctx.font = `bold ${8 / z}px Arial`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+
+  if (side === 'bottom') {
+    ctx.fillText('── BINDING ──', paperW / 2, paperH - stripe / 2)
+  } else if (side === 'top') {
+    ctx.fillText('── BINDING ──', paperW / 2, stripe / 2)
+  } else if (side === 'left') {
+    ctx.save()
+    ctx.translate(stripe / 2, paperH / 2)
+    ctx.rotate(-Math.PI / 2)
+    ctx.fillText('── BINDING ──', 0, 0)
+    ctx.restore()
+  } else {
+    ctx.save()
+    ctx.translate(paperW - stripe / 2, paperH / 2)
+    ctx.rotate(Math.PI / 2)
+    ctx.fillText('── BINDING ──', 0, 0)
+    ctx.restore()
+  }
+  ctx.restore()
+}
+
+function drawPerforations(
+  ctx: CanvasRenderingContext2D,
+  vt: number[],
+  paperW: number,
+  paperH: number,
+  lines: PerforationLine[],
+): void {
+  if (lines.length === 0) return
+  ctx.save()
+  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
+  const z = vt[0] || 1
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)'
+  ctx.lineWidth = 0.75 / z
+
+  for (const line of lines) {
+    const posPx = line.positionMm * (96 / 25.4)
+    if (line.style === 'dashes') {
+      ctx.setLineDash([7 / z, 4 / z])
+      ctx.beginPath()
+      if (line.axis === 'h') {
+        ctx.moveTo(0, posPx)
+        ctx.lineTo(paperW, posPx)
+      } else {
+        ctx.moveTo(posPx, 0)
+        ctx.lineTo(posPx, paperH)
+      }
+      ctx.stroke()
+    } else {
+      ctx.setLineDash([])
+      const tickLen = 10 / z
+      ctx.beginPath()
+      if (line.axis === 'h') {
+        ctx.moveTo(0, posPx); ctx.lineTo(tickLen, posPx)
+        ctx.moveTo(paperW - tickLen, posPx); ctx.lineTo(paperW, posPx)
+      } else {
+        ctx.moveTo(posPx, 0); ctx.lineTo(posPx, tickLen)
+        ctx.moveTo(posPx, paperH - tickLen); ctx.lineTo(posPx, paperH)
+      }
+      ctx.stroke()
+    }
+  }
+  ctx.setLineDash([])
+  ctx.restore()
+}
+
 export function initCanvas(
   el: HTMLCanvasElement,
   paperSize: PaperSizeName,
   orientation: Orientation,
   customSize?: CustomSize | null,
   receiptsPerPage?: ReceiptsPerPage,
+  options?: { bindingSide?: BindingSide; perforationLines?: PerforationLine[] },
 ): Canvas {
   const dims = receiptsPerPage && receiptsPerPage > 1
     ? getSlotDimensions(paperSize, orientation, receiptsPerPage, customSize)
@@ -125,23 +234,37 @@ export function initCanvas(
   const canvas = new Canvas(el, {
     width: dims.widthPx96,
     height: dims.heightPx96,
-    backgroundColor: '#ffffff',
+    backgroundColor: '',
     selection: true,
   }) as AnnotatedCanvas
+
+  canvas.data = {
+    schemaVersion: SCHEMA_VERSION,
+    paperSize,
+    orientation,
+    paperWidthPx: dims.widthPx96,
+    paperHeightPx: dims.heightPx96,
+    bindingSide: options?.bindingSide ?? 'bottom',
+    perforationLines: options?.perforationLines ?? [],
+  }
 
   let activeGuides: GuideLineSpec[] = []
 
   canvas.on('object:moving', (e) => {
     const obj = e.target
     if (!obj) return
+    const data = (canvas as AnnotatedCanvas).data
+    const pw = data?.paperWidthPx ?? canvas.width
+    const ph = data?.paperHeightPx ?? canvas.height
+
     // Grid snap
     obj.set({
       left: Math.round((obj.left ?? 0) / SNAP_SIZE) * SNAP_SIZE,
       top: Math.round((obj.top ?? 0) / SNAP_SIZE) * SNAP_SIZE,
     })
-    // Smart guides (override grid snap for proximity snaps)
+    // Smart guides override grid snap near snap points
     const others = canvas.getObjects().filter((o: FabricObject) => o !== obj)
-    const result = computeGuides(obj, others, canvas.width, canvas.height)
+    const result = computeGuides(obj, others, pw, ph)
     obj.set({ left: result.left, top: result.top })
     activeGuides = result.guides
   })
@@ -150,11 +273,17 @@ export function initCanvas(
   canvas.on('selection:cleared', () => { activeGuides = []; canvas.requestRenderAll() })
 
   canvas.on('after:render', ({ ctx }: { ctx: CanvasRenderingContext2D }) => {
-    if (activeGuides.length === 0) return
-    drawGuides(ctx, activeGuides, canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0], canvas.width, canvas.height)
-  })
+    const data = (canvas as AnnotatedCanvas).data
+    const vt = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]
+    const pw = data?.paperWidthPx ?? canvas.width
+    const ph = data?.paperHeightPx ?? canvas.height
 
-  canvas.data = { schemaVersion: SCHEMA_VERSION, paperSize, orientation }
+    if (activeGuides.length > 0) {
+      drawGuides(ctx, activeGuides, vt, pw, ph)
+    }
+    drawBindingEdge(ctx, vt, pw, ph, data?.bindingSide ?? 'bottom')
+    drawPerforations(ctx, vt, pw, ph, data?.perforationLines ?? [])
+  })
 
   return canvas
 }
@@ -257,7 +386,6 @@ export function addTable(canvas: Canvas, rows: number, cols: number): Group {
 
   const items: FabricObject[] = []
 
-  // Outer border
   items.push(new Rect({
     width: totalW,
     height: totalH,
@@ -270,7 +398,6 @@ export function addTable(canvas: Canvas, rows: number, cols: number): Group {
     evented: false,
   }))
 
-  // Horizontal inner lines
   for (let r = 1; r < rows; r++) {
     const y = r * cellH - totalH / 2
     items.push(new Line([-totalW / 2, y, totalW / 2, y], {
@@ -281,7 +408,6 @@ export function addTable(canvas: Canvas, rows: number, cols: number): Group {
     }))
   }
 
-  // Vertical inner lines
   for (let c = 1; c < cols; c++) {
     const x = c * cellW - totalW / 2
     items.push(new Line([x, -totalH / 2, x, totalH / 2], {

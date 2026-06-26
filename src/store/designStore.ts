@@ -7,6 +7,7 @@ export type PaperSizeName =
   | 'Custom'
 
 export type BindingType = 'none' | 'pad' | 'saddle' | 'wire-o'
+export type BindingSide = 'left' | 'right' | 'top' | 'bottom'
 export type ReceiptsPerPage = 1 | 2 | 4 | 6 | 8
 
 export type Orientation = 'portrait' | 'landscape'
@@ -14,6 +15,12 @@ export type Orientation = 'portrait' | 'landscape'
 export interface CustomSize {
   widthMm: number
   heightMm: number
+}
+
+export interface PerforationLine {
+  axis: 'h' | 'v'
+  positionMm: number
+  style: 'dashes' | 'corner-marks'
 }
 
 interface DesignState {
@@ -26,7 +33,10 @@ interface DesignState {
   bleedEnabled: boolean
   showSafeZone: boolean
   bindingType: BindingType
+  bindingSide: BindingSide
+  twoUpOrientation: 'h' | 'v'
   receiptsPerPage: ReceiptsPerPage
+  perforationLines: PerforationLine[]
   history: string[]
   historyIndex: number
 
@@ -39,7 +49,10 @@ interface DesignState {
   setBleedEnabled: (enabled: boolean) => void
   setShowSafeZone: (show: boolean) => void
   setBindingType: (type: BindingType) => void
+  setBindingSide: (side: BindingSide) => void
+  setTwoUpOrientation: (o: 'h' | 'v') => void
   setReceiptsPerPage: (n: ReceiptsPerPage) => void
+  setPerforationLines: (lines: PerforationLine[]) => void
   pushHistory: (json: string) => void
   undo: () => string | null
   redo: () => string | null
@@ -56,7 +69,10 @@ const DEFAULT_STATE = {
   bleedEnabled: true,
   showSafeZone: true,
   bindingType: 'pad' as BindingType,
+  bindingSide: 'bottom' as BindingSide,
+  twoUpOrientation: 'v' as 'h' | 'v',
   receiptsPerPage: 1 as ReceiptsPerPage,
+  perforationLines: [] as PerforationLine[],
   history: [],
   historyIndex: -1,
 }
@@ -73,7 +89,10 @@ export const useDesignStore = create<DesignState>((set, get) => ({
   setBleedEnabled: (enabled) => set({ bleedEnabled: enabled }),
   setShowSafeZone: (show) => set({ showSafeZone: show }),
   setBindingType: (type) => set({ bindingType: type }),
+  setBindingSide: (side) => set({ bindingSide: side }),
+  setTwoUpOrientation: (o) => set({ twoUpOrientation: o }),
   setReceiptsPerPage: (n) => set({ receiptsPerPage: n }),
+  setPerforationLines: (lines) => set({ perforationLines: lines }),
 
   pushHistory: (json) => {
     const { history, historyIndex } = get()
