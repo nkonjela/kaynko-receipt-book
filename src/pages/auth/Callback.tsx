@@ -7,13 +7,38 @@ export default function Callback() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    supabase.auth.exchangeCodeForSession(window.location.search).then(({ error: err }) => {
-      if (err) {
-        setError(err.message)
-      } else {
+    const params = new URLSearchParams(window.location.search)
+    const errorDesc = params.get('error_description') ?? params.get('error')
+    const code = params.get('code')
+
+    if (errorDesc) {
+      setError(decodeURIComponent(errorDesc))
+      return
+    }
+
+    if (code) {
+      supabase.auth.exchangeCodeForSession(window.location.href).then(({ error: err }) => {
+        if (err) {
+          setError(err.message)
+        } else {
+          navigate('/dashboard', { replace: true })
+        }
+      })
+      return
+    }
+
+    // Magic link / hash-based session — Supabase handles it via onAuthStateChange
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_IN') {
+        subscription.unsubscribe()
         navigate('/dashboard', { replace: true })
       }
     })
+    // Timeout fallback
+    const t = setTimeout(() => {
+      setError('Sign-in timed out. Please try again.')
+    }, 10000)
+    return () => { subscription.unsubscribe(); clearTimeout(t) }
   }, [navigate])
 
   if (error) {
