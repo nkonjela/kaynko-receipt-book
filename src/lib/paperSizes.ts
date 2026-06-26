@@ -24,9 +24,11 @@ function mmToDim(widthMm: number, heightMm: number): PaperDimensions {
 }
 
 const PAPER_SIZES: Record<Exclude<PaperSizeName, 'Custom'>, PaperDimensions> = {
+  'A3': mmToDim(297, 420),
   'A4': mmToDim(210, 297),
   'A5': mmToDim(148, 210),
   'A6': mmToDim(105, 148),
+  'DL': mmToDim(99, 210),
   'US Letter': mmToDim(215.9, 279.4),
   'Half Letter': mmToDim(139.7, 215.9),
   'Slip/Register': mmToDim(215.9, 83.8),

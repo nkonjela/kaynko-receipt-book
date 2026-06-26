@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useUserStore } from '@/store/userStore'
 import { useDesignStore } from '@/store/designStore'
+import PageSetupDialog, { type PageSetupSettings } from '@/components/Editor/PageSetupDialog'
 
 interface Design {
   id: string
@@ -20,6 +21,7 @@ export default function Dashboard() {
   const [designs, setDesigns] = useState<Design[]>([])
   const [loading, setLoading] = useState(true)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [showSetupDialog, setShowSetupDialog] = useState(false)
 
   useEffect(() => {
     if (!user) return
@@ -48,6 +50,18 @@ export default function Dashboard() {
 
   function newDesign() {
     reset()
+    setShowSetupDialog(true)
+  }
+
+  function handleSetupConfirm(settings: PageSetupSettings) {
+    const store = useDesignStore.getState()
+    store.setPaperSize(settings.paperSize)
+    store.setOrientation(settings.orientation)
+    store.setCustomSize(settings.customSize)
+    store.setBleedEnabled(settings.bleedEnabled)
+    store.setShowSafeZone(settings.showSafeZone)
+    store.setBindingType(settings.bindingType)
+    setShowSetupDialog(false)
     navigate('/editor')
   }
 
@@ -55,6 +69,13 @@ export default function Dashboard() {
 
   return (
     <main className="min-h-screen bg-krb-bg">
+      {showSetupDialog && (
+        <PageSetupDialog
+          title="New Design"
+          onConfirm={handleSetupConfirm}
+          onClose={() => setShowSetupDialog(false)}
+        />
+      )}
       {/* Top nav */}
       <header className="bg-white border-b border-krb-rule px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">

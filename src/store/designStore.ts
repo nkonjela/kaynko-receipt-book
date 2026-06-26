@@ -1,10 +1,12 @@
 import { create } from 'zustand'
 
 export type PaperSizeName =
-  | 'A4' | 'A5' | 'A6'
+  | 'A3' | 'A4' | 'A5' | 'A6' | 'DL'
   | 'US Letter' | 'Half Letter'
   | 'Slip/Register' | '3-up A4'
   | 'Custom'
+
+export type BindingType = 'none' | 'pad' | 'saddle' | 'wire-o'
 
 export type Orientation = 'portrait' | 'landscape'
 
@@ -22,6 +24,7 @@ interface DesignState {
   customSize: CustomSize | null
   bleedEnabled: boolean
   showSafeZone: boolean
+  bindingType: BindingType
   history: string[]
   historyIndex: number
 
@@ -33,6 +36,7 @@ interface DesignState {
   setCustomSize: (size: CustomSize | null) => void
   setBleedEnabled: (enabled: boolean) => void
   setShowSafeZone: (show: boolean) => void
+  setBindingType: (type: BindingType) => void
   pushHistory: (json: string) => void
   undo: () => string | null
   redo: () => string | null
@@ -43,11 +47,12 @@ const DEFAULT_STATE = {
   designId: null,
   name: 'Untitled Design',
   canvasJson: null,
-  paperSize: 'A4' as PaperSizeName,
+  paperSize: 'A5' as PaperSizeName,
   orientation: 'portrait' as Orientation,
   customSize: null,
   bleedEnabled: true,
   showSafeZone: true,
+  bindingType: 'pad' as BindingType,
   history: [],
   historyIndex: -1,
 }
@@ -63,6 +68,7 @@ export const useDesignStore = create<DesignState>((set, get) => ({
   setCustomSize: (size) => set({ customSize: size }),
   setBleedEnabled: (enabled) => set({ bleedEnabled: enabled }),
   setShowSafeZone: (show) => set({ showSafeZone: show }),
+  setBindingType: (type) => set({ bindingType: type }),
 
   pushHistory: (json) => {
     const { history, historyIndex } = get()
