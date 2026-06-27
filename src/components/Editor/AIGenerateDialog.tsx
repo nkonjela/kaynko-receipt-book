@@ -59,7 +59,7 @@ export default function AIGenerateDialog({ canvas, onClose }: Props) {
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
         <div className="flex items-center justify-between p-5 border-b border-krb-rule">
-          <h2 className="font-bold text-krb-navy">Generate from sample receipt</h2>
+          <h2 className="font-bold text-krb-navy">Generate from sample document</h2>
           <button type="button" onClick={onClose} className="text-krb-ink3 hover:text-krb-ink text-xl leading-none">&times;</button>
         </div>
 
@@ -67,7 +67,7 @@ export default function AIGenerateDialog({ canvas, onClose }: Props) {
           {step === 'upload' && (
             <>
               <p className="text-sm text-krb-ink3 mb-4">
-                Upload a photo of your existing receipt. Claude AI will analyse the layout and recreate it on the canvas.
+                Upload a sample document image. Claude AI will analyse the layout and recreate it on the canvas.
               </p>
 
               <div
@@ -102,7 +102,7 @@ export default function AIGenerateDialog({ canvas, onClose }: Props) {
                   onClick={handleGenerate}
                   className="flex-1 bg-krb-navy text-white rounded-lg py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
                 >
-                  Analyse receipt
+                  Analyse document
                 </button>
               </div>
             </>
@@ -111,7 +111,7 @@ export default function AIGenerateDialog({ canvas, onClose }: Props) {
           {step === 'analysing' && (
             <div className="py-10 text-center">
               <div className="w-10 h-10 border-4 border-krb-navy border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-              <p className="font-medium text-krb-navy">Analysing your receipt…</p>
+              <p className="font-medium text-krb-navy">Analysing your document…</p>
               <p className="text-sm text-krb-ink3 mt-1">This usually takes 5–10 seconds.</p>
             </div>
           )}

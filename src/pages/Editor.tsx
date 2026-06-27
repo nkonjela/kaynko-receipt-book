@@ -10,7 +10,7 @@ import {
   centrePos,
 } from '@/lib/canvas'
 import type { InitCanvasOptions, DimensionInfo } from '@/lib/canvas'
-import { exportPDF } from '@/lib/pdf'
+import type { CanvasObject } from '@/lib/pdf'
 import { getPaperDimensions, getSlotDimensions } from '@/lib/paperSizes'
 import { generateNumbers } from '@/lib/numbering'
 import { supabase } from '@/lib/supabase'
@@ -18,7 +18,6 @@ import { useDesignStore } from '@/store/designStore'
 import type { PerforationLine } from '@/store/designStore'
 import { useNumberingStore } from '@/store/numberingStore'
 import { useUserStore } from '@/store/userStore'
-import { maxPagesForTier, canExportWithoutWatermark } from '@/lib/featureGate'
 import AIGenerateDialog from '@/components/Editor/AIGenerateDialog'
 import PropertiesPanel from '@/components/Editor/PropertiesPanel'
 import CanvasContextMenu from '@/components/Editor/CanvasContextMenu'
@@ -28,6 +27,7 @@ import LayersPanel from '@/components/Editor/LayersPanel'
 import { RulerH, RulerV } from '@/components/Editor/Ruler'
 import PreviewModal from '@/components/Editor/PreviewModal'
 import TableColumnResizer from '@/components/Editor/TableColumnResizer'
+import GenerationPanel from '@/components/GenerationPanel'
 
 function SidebarSection({
   title,
@@ -81,11 +81,11 @@ export default function Editor() {
   const [draggingGuide, setDraggingGuide] = useState<{ axis: 'h' | 'v'; screenPos: number } | null>(null)
   const [userGuides, setUserGuides] = useState<{ axis: 'h' | 'v'; positionMm: number }[]>([])
   const [dimTooltip, setDimTooltip] = useState<DimensionInfo | null>(null)
+  const [showGenerationPanel, setShowGenerationPanel] = useState(false)
 
   const designStore = useDesignStore()
   const numberingStore = useNumberingStore()
   const user = useUserStore((s) => s.user)
-  const tier = useUserStore((s) => s.tier)
 
   const paperSize = designStore.paperSize
   const orientation = designStore.orientation
@@ -300,38 +300,32 @@ export default function Editor() {
     setSaving(false); setSaveMsg('Saved'); setTimeout(() => setSaveMsg(''), 2000)
   }, [fabricCanvas, user, designId, designStore.name, paperSize, numberingStore, navigate])
 
+  function getCanvasObjects(): CanvasObject[] {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return []
+    return canvas.getObjects().map((obj) => {
+      const o = obj as unknown as Record<string, unknown>
+      const children = obj.type === 'group'
+        ? ((o['_objects'] ?? o['objects']) as unknown[] | undefined ?? []).map((c) => {
+            const ch = c as Record<string, unknown>
+            return { type: String(ch['type'] ?? 'rect'), left: Number(ch['left'] ?? 0), top: Number(ch['top'] ?? 0), width: Number(ch['width'] ?? 0), height: Number(ch['height'] ?? 0), scaleX: Number(ch['scaleX'] ?? 1), scaleY: Number(ch['scaleY'] ?? 1), text: ch['text'] as string | undefined, fontSize: ch['fontSize'] as number | undefined, fill: ch['fill'] as string | undefined, stroke: ch['stroke'] as string | undefined, strokeWidth: ch['strokeWidth'] as number | undefined, data: ch['data'] as { type?: string } | undefined }
+          })
+        : undefined
+      return { type: String(o['type'] ?? 'rect'), left: Number(obj.left ?? 0), top: Number(obj.top ?? 0), width: Number(obj.width ?? 0), height: Number(obj.height ?? 0), scaleX: Number(obj.scaleX ?? 1), scaleY: Number(obj.scaleY ?? 1), text: o['text'] as string | undefined, fontSize: o['fontSize'] as number | undefined, fill: o['fill'] as string | undefined, stroke: o['stroke'] as string | undefined, strokeWidth: o['strokeWidth'] as number | undefined, data: o['data'] as { type?: string } | undefined, objects: children }
+    })
+  }
+
   async function handleExport() {
+    if (exportFormat === 'pdf') {
+      setShowGenerationPanel(true)
+      return
+    }
+    // PNG direct export
     setExporting(true)
     try {
-      if (exportFormat === 'png') {
-        const canvas = fabricCanvasRef.current; if (!canvas) return
-        const dataUrl = canvas.toDataURL({ format: 'png', multiplier: 300 / 96 })
-        const a = document.createElement('a'); a.href = dataUrl; a.download = `${designStore.name.replace(/\s+/g, '-')}.png`; a.click()
-      } else {
-        if (!fabricCanvas) return
-        const total = Math.min(numberingStore.total, maxPagesForTier(tier))
-        const bytes = await exportPDF({
-          paperSize, orientation, bleedEnabled: designStore.bleedEnabled, cropMarks: true,
-          watermark: !canExportWithoutWatermark(tier), cmyk: false, receiptsPerPage,
-          numberingEnabled: numberingStore.numberingEnabled, twoUpOrientation,
-          perforationLines: designStore.perforationLines, numbering: { ...numberingStore, total },
-          canvasObjects: fabricCanvas.getObjects().map((obj) => {
-            const o = obj as unknown as Record<string, unknown>
-            // For groups, extract children in group-local coords so PDF renderer can flatten them.
-            const children = obj.type === 'group'
-              ? ((o['_objects'] ?? o['objects']) as unknown[] | undefined ?? []).map((c) => {
-                  const ch = c as Record<string, unknown>
-                  return { type: String(ch['type'] ?? 'rect'), left: Number(ch['left'] ?? 0), top: Number(ch['top'] ?? 0), width: Number(ch['width'] ?? 0), height: Number(ch['height'] ?? 0), scaleX: Number(ch['scaleX'] ?? 1), scaleY: Number(ch['scaleY'] ?? 1), text: ch['text'] as string | undefined, fontSize: ch['fontSize'] as number | undefined, fill: ch['fill'] as string | undefined, stroke: ch['stroke'] as string | undefined, strokeWidth: ch['strokeWidth'] as number | undefined, data: ch['data'] as { type?: string } | undefined }
-                })
-              : undefined
-            return { type: String(o['type'] ?? 'rect'), left: Number(obj.left ?? 0), top: Number(obj.top ?? 0), width: Number(obj.width ?? 0), height: Number(obj.height ?? 0), scaleX: Number(obj.scaleX ?? 1), scaleY: Number(obj.scaleY ?? 1), text: o['text'] as string | undefined, fontSize: o['fontSize'] as number | undefined, fill: o['fill'] as string | undefined, stroke: o['stroke'] as string | undefined, strokeWidth: o['strokeWidth'] as number | undefined, data: o['data'] as { type?: string } | undefined, objects: children }
-          }),
-        })
-        const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a'); a.href = url; a.download = `${designStore.name.replace(/\s+/g, '-')}.pdf`; a.click()
-        URL.revokeObjectURL(url)
-      }
+      const canvas = fabricCanvasRef.current; if (!canvas) return
+      const dataUrl = canvas.toDataURL({ format: 'png', multiplier: 300 / 96 })
+      const a = document.createElement('a'); a.href = dataUrl; a.download = `${designStore.name.replace(/\s+/g, '-')}.png`; a.click()
     } finally { setExporting(false) }
   }
 
@@ -775,6 +769,13 @@ export default function Editor() {
         </aside>
       </div>
 
+      {showGenerationPanel && (
+        <GenerationPanel
+          onClose={() => setShowGenerationPanel(false)}
+          getCanvasObjects={getCanvasObjects}
+          designName={designStore.name}
+        />
+      )}
       {showAIDialog && <AIGenerateDialog canvas={fabricCanvas} onClose={() => setShowAIDialog(false)} />}
       {showSetupDialog && (
         <PageSetupDialog title="Page Setup"

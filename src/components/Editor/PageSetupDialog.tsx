@@ -217,7 +217,7 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
             </div>
             {receiptsPerPage > 1 && (
               <p className="text-xs text-krb-ink3 mt-2 bg-krb-bg rounded-lg px-3 py-2">
-                You&apos;ll design one receipt slot — the PDF will tile {receiptsPerPage} copies per page automatically.
+                You&apos;ll design one item slot — the PDF will tile {receiptsPerPage} copies per page automatically.
               </p>
             )}
             {receiptsPerPage === 2 && (
@@ -372,7 +372,7 @@ export default function PageSetupDialog({ title = 'New Design', initialSettings,
               className="w-full border border-krb-rule rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-krb-navy"
             >
               <option value="none">None / Single page</option>
-              <option value="pad">Pad binding — glued spine, tear-off (most common for receipt books)</option>
+              <option value="pad">Pad binding — glued spine, tear-off</option>
               <option value="saddle">Saddle stitch — stapled through fold (must be multiples of 4 pages)</option>
               <option value="wire-o">Wire-O / Spiral — keep content 8 mm from spine</option>
             </select>

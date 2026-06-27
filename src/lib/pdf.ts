@@ -45,6 +45,8 @@ export interface ExportConfig {
   numberingEnabled?: boolean
   twoUpOrientation?: 'h' | 'v'
   perforationLines?: PerforationLine[]
+  /** How many times each unique number appears consecutively. 1=original, 2=duplicate, 3=triplicate. */
+  copiesPerItem?: 1 | 2 | 3
 }
 
 export function mmToCropPt(mm: number): number {
@@ -308,6 +310,7 @@ export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
     numberingEnabled = true,
     twoUpOrientation = 'v',
     perforationLines = [],
+    copiesPerItem = 1,
   } = config
 
   const dims = getPaperDimensions(paperSize, orientation, customSize)
@@ -329,11 +332,14 @@ export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
   const { cols, rows } = getSlotGrid(receiptsPerPage, orientation, twoUpOrientation)
   const slotWPt = trimWidthPt / cols
   const slotHPt = trimHeightPt / rows
-  const pdfPageCount = Math.ceil(numbering.total / receiptsPerPage)
+
+  // totalSlots accounts for copies — each unique number occupies copiesPerItem consecutive slots
+  const totalSlots = numbering.total * copiesPerItem
+  const pdfPageCount = Math.ceil(totalSlots / receiptsPerPage)
 
   const doc = await PDFDocument.create()
-  doc.setCreator('Kaynko Receipt Book')
-  doc.setProducer('KRB / pdf-lib')
+  doc.setCreator('Kaynko Designer')
+  doc.setProducer('Kaynko Designer / pdf-lib')
 
   const numbers = generateNumbers(numbering)
 
@@ -349,8 +355,11 @@ export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
     }
 
     for (let slotIdx = 0; slotIdx < receiptsPerPage; slotIdx++) {
-      const receiptIdx = pageIdx * receiptsPerPage + slotIdx
-      if (receiptIdx >= numbering.total) break
+      const globalSlotIdx = pageIdx * receiptsPerPage + slotIdx
+      if (globalSlotIdx >= totalSlots) break
+
+      // Each unique number fills copiesPerItem consecutive global slots
+      const uniqueIdx = Math.floor(globalSlotIdx / copiesPerItem)
 
       const col = slotIdx % cols
       const row = Math.floor(slotIdx / cols)
@@ -359,7 +368,7 @@ export async function exportPDF(config: ExportConfig): Promise<Uint8Array> {
       const slotOffsetXPt = bleedPt + col * slotWPt
       const slotOffsetYPt = bleedPt + (rows - 1 - row) * slotHPt
 
-      const effectiveNumber = numberingEnabled ? numbers[receiptIdx] : numbers[0]
+      const effectiveNumber = numberingEnabled ? numbers[uniqueIdx] : numbers[0]
 
       await renderObjectsToPage(
         page, doc, canvasObjects, effectiveNumber,

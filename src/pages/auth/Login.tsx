@@ -44,11 +44,11 @@ export default function Login() {
       <div className="bg-white border border-krb-rule rounded-xl p-8 w-full max-w-sm shadow-sm">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 bg-krb-orange rounded-lg flex items-center justify-center text-white font-black text-sm">
-            KRB
+            KD
           </div>
           <div>
             <div className="font-bold text-krb-navy">Kaynko</div>
-            <div className="text-xs text-krb-ink3 uppercase tracking-widest">Receipt Book</div>
+            <div className="text-xs text-krb-ink3 uppercase tracking-widest">Designer</div>
           </div>
         </div>
 

@@ -79,8 +79,8 @@ export default function Dashboard() {
       {/* Top nav */}
       <header className="bg-white border-b border-krb-rule px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-krb-orange rounded-lg flex items-center justify-center text-white font-black text-xs">KRB</div>
-          <span className="font-bold text-krb-navy">Kaynko Receipt Book</span>
+          <div className="w-8 h-8 bg-krb-orange rounded-lg flex items-center justify-center text-white font-black text-xs">KD</div>
+          <span className="font-bold text-krb-navy">Kaynko Designer</span>
         </div>
         <div className="flex items-center gap-4">
           <span className={`text-xs font-semibold px-2 py-0.5 rounded-full capitalize ${tierBadgeColor}`}>{tier}</span>
@@ -117,7 +117,7 @@ export default function Dashboard() {
           <div className="text-center py-20">
             <div className="text-5xl mb-4">📒</div>
             <h2 className="text-lg font-bold text-krb-navy mb-2">No designs yet</h2>
-            <p className="text-krb-ink3 text-sm mb-6">Create your first receipt book or pick a template to get started.</p>
+            <p className="text-krb-ink3 text-sm mb-6">Create your first design or pick a template to get started.</p>
             <div className="flex gap-3 justify-center">
               <button type="button" onClick={() => navigate('/templates')} className="border border-krb-rule rounded-lg px-4 py-2 text-sm">Browse templates</button>
               <button type="button" onClick={newDesign} className="bg-krb-orange text-white rounded-lg px-4 py-2 text-sm font-semibold">Create blank</button>

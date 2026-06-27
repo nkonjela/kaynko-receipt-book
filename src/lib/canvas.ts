@@ -316,14 +316,6 @@ function drawPaperCenterLines(
   // Horizontal center line
   ctx.beginPath(); ctx.moveTo(0, paperH / 2); ctx.lineTo(paperW, paperH / 2); ctx.stroke()
 
-  // Origin crosshair at (0, 0)
-  ctx.setLineDash([])
-  const arm = 6 / z
-  ctx.beginPath()
-  ctx.moveTo(-arm, -arm); ctx.lineTo(arm, arm)
-  ctx.moveTo(arm, -arm); ctx.lineTo(-arm, arm)
-  ctx.stroke()
-
   ctx.globalAlpha = 1
   ctx.setLineDash([])
   ctx.restore()
