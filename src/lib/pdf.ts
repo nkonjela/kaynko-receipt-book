@@ -180,6 +180,20 @@ async function renderObjectsToPage(
         borderColor: obj.stroke && obj.stroke !== 'transparent' ? strokeColor : undefined,
         borderWidth: sw > 0 ? sw : undefined,
       })
+      // Render text label stored via double-click text entry
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const label = (obj as any).data?.labelText as string | undefined
+      if (label) {
+        const labelSize = 12
+        const approxW = label.length * labelSize * 0.55
+        page.drawText(label, {
+          x: xPt + wPt / 2 - approxW / 2,
+          y: yPt + hPt / 2 - labelSize / 2,
+          size: labelSize,
+          font,
+          color: rgb(0.1, 0.1, 0.1),
+        })
+      }
     } else if (obj.type === 'line') {
       // Lines: left/top is the top-left of the bounding box, width/height is the extent.
       // Draw from top-left to bottom-right of bounding box (handles both H and V lines).

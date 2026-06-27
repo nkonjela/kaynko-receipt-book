@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import type { Canvas as FabricCanvas, FabricObject } from 'fabric'
-import { Textbox, Rect, Line, ActiveSelection } from 'fabric'
+import { Textbox, Rect, Line, ActiveSelection, Group } from 'fabric'
 import {
   initCanvas, serializeCanvas, loadCanvas, addNumberField,
   attachZoomPan, applyZoom, fitToViewport, updateCanvasData,
@@ -27,6 +27,7 @@ import ZoomControls from '@/components/Editor/ZoomControls'
 import LayersPanel from '@/components/Editor/LayersPanel'
 import { RulerH, RulerV } from '@/components/Editor/Ruler'
 import PreviewModal from '@/components/Editor/PreviewModal'
+import TableColumnResizer from '@/components/Editor/TableColumnResizer'
 
 function SidebarSection({
   title,
@@ -727,6 +728,15 @@ export default function Editor() {
             {/* Paper background */}
             <div style={{ position: 'absolute', left: paperLeft, top: paperTop, width: paperDisplayW, height: paperDisplayH, background: designStore.pageBackgroundColor, boxShadow: '0 4px 20px rgba(0,0,0,0.18),0 1px 4px rgba(0,0,0,0.12)', zIndex: 1, pointerEvents: 'none' }} />
             <canvas ref={canvasElRef} />
+            {/* Column resize handles for selected table */}
+            {fabricCanvas && selectedObj instanceof Group && (selectedObj as unknown as { data?: { type?: string } }).data?.type === 'table' && (
+              <TableColumnResizer
+                table={selectedObj as Group}
+                canvas={fabricCanvas}
+                vt={viewportTransform}
+                onChanged={() => { if (fabricCanvas) designStore.pushHistory(serializeCanvas(fabricCanvas)) }}
+              />
+            )}
             {/* Safe zone — 5 mm INSIDE the trim edge (above the canvas) */}
             {designStore.showSafeZone && (
               <div style={{ position: 'absolute', left: paperLeft + SAFE_DISPLAY, top: paperTop + SAFE_DISPLAY, width: paperDisplayW - SAFE_DISPLAY * 2, height: paperDisplayH - SAFE_DISPLAY * 2, border: '1px dashed rgba(0,140,200,0.6)', zIndex: 3, pointerEvents: 'none', boxSizing: 'border-box' }}>

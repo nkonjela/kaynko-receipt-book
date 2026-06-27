@@ -297,6 +297,64 @@ function drawUserGuides(
   ctx.restore()
 }
 
+function drawPaperCenterLines(
+  ctx: CanvasRenderingContext2D,
+  vt: number[],
+  paperW: number,
+  paperH: number,
+): void {
+  ctx.save()
+  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
+  const z = vt[0] || 1
+  ctx.strokeStyle = '#C8C4BD'
+  ctx.globalAlpha = 0.35
+  ctx.lineWidth = 0.5 / z
+  ctx.setLineDash([3 / z, 6 / z])
+
+  // Vertical center line
+  ctx.beginPath(); ctx.moveTo(paperW / 2, 0); ctx.lineTo(paperW / 2, paperH); ctx.stroke()
+  // Horizontal center line
+  ctx.beginPath(); ctx.moveTo(0, paperH / 2); ctx.lineTo(paperW, paperH / 2); ctx.stroke()
+
+  // Origin crosshair at (0, 0)
+  ctx.setLineDash([])
+  const arm = 6 / z
+  ctx.beginPath()
+  ctx.moveTo(-arm, -arm); ctx.lineTo(arm, arm)
+  ctx.moveTo(arm, -arm); ctx.lineTo(-arm, arm)
+  ctx.stroke()
+
+  ctx.globalAlpha = 1
+  ctx.setLineDash([])
+  ctx.restore()
+}
+
+function drawRectLabels(
+  ctx: CanvasRenderingContext2D,
+  vt: number[],
+  canvas: Canvas,
+): void {
+  const rects = canvas.getObjects().filter((o) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return o.type === 'rect' && !!((o as any).data?.labelText)
+  })
+  if (rects.length === 0) return
+  ctx.save()
+  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.font = '14px Arial, sans-serif'
+  ctx.fillStyle = '#1A1A1A'
+  for (const obj of rects) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const label = (obj as any).data.labelText as string
+    const cx = (obj.left ?? 0) + (obj.width ?? 0) * (obj.scaleX ?? 1) / 2
+    const cy = (obj.top  ?? 0) + (obj.height ?? 0) * (obj.scaleY ?? 1) / 2
+    ctx.fillText(label, cx, cy)
+  }
+  ctx.restore()
+}
+
 export interface DimensionInfo {
   x: number
   y: number
@@ -361,6 +419,7 @@ export function initCanvas(
   }
 
   let activeGuides: GuideLineSpec[] = []
+  let _pendingTableCell: Textbox | null = null
 
   canvas.on('object:moving', (e) => {
     const obj = e.target
@@ -394,20 +453,92 @@ export function initCanvas(
 
   canvas.on('object:modified', () => {
     activeGuides = []
+    _pendingTableCell = null
     options?.onDimensions?.(null)
     canvas.requestRenderAll()
   })
-  canvas.on('selection:cleared', () => { activeGuides = []; canvas.requestRenderAll() })
+  canvas.on('selection:cleared', () => {
+    activeGuides = []
+    _pendingTableCell = null
+    canvas.requestRenderAll()
+  })
+
+  // Track which table cell the pointer is over so dblclick can enter edit mode.
+  // Fabric 7 does not reliably populate subTargets on the synthetic dblclick event,
+  // so we detect the hit cell during mouse:down and consume it in mouse:dblclick.
+  canvas.on('mouse:down', (e) => {
+    _pendingTableCell = null
+    const group = e.target
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (!group || group.type !== 'group' || (group as any).data?.type !== 'table') return
+    const pointer = (e as unknown as { absolutePointer: { x: number; y: number } }).absolutePointer
+    const gScaleX = group.scaleX ?? 1
+    const gScaleY = group.scaleY ?? 1
+    // Group children use group-local coords where (0,0) = group center.
+    // Group.left/top is the top-left corner of the group bounding box.
+    const gCenterX = (group.left ?? 0) + (group.width ?? 0) * gScaleX / 2
+    const gCenterY = (group.top  ?? 0) + (group.height ?? 0) * gScaleY / 2
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const child of (group as any).getObjects() as FabricObject[]) {
+      if (child.type !== 'textbox') continue
+      const childLeft = gCenterX + (child.left ?? 0) * gScaleX
+      const childTop  = gCenterY + (child.top  ?? 0) * gScaleY
+      const childW    = (child.width  ?? 0) * gScaleX
+      const childH    = (child.height ?? 0) * gScaleY
+      if (pointer.x >= childLeft && pointer.x <= childLeft + childW &&
+          pointer.y >= childTop  && pointer.y <= childTop  + childH) {
+        _pendingTableCell = child as Textbox
+        break
+      }
+    }
+  })
 
   canvas.on('mouse:dblclick', (e) => {
-    const target = e.target
-    if (!target || target.type !== 'group') return
-    const ev = e as unknown as { subTargets?: FabricObject[] }
-    const cell = ev.subTargets?.[0]
-    if (cell && cell.type === 'textbox') {
+    // Table cell editing
+    if (e.target?.type === 'group' && _pendingTableCell) {
+      const parentGroup = e.target
+      const cell = _pendingTableCell
+      _pendingTableCell = null
       canvas.setActiveObject(cell)
-      ;(cell as Textbox).enterEditing()
-      ;(cell as Textbox).selectAll()
+      cell.enterEditing()
+      cell.selectAll()
+      cell.once('editing:exited', () => {
+        canvas.setActiveObject(parentGroup)
+        canvas.requestRenderAll()
+      })
+      canvas.requestRenderAll()
+      return
+    }
+    _pendingTableCell = null
+
+    // Rect text label editing: double-click any rect to set/edit a centered label.
+    const target = e.target
+    if (target && target.type === 'rect') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const obj = target as any
+      const existing: string = obj.data?.labelText ?? ''
+      const tb = new Textbox(existing, {
+        left: obj.left ?? 0,
+        top: obj.top ?? 0,
+        width: (obj.width ?? 100) * (obj.scaleX ?? 1),
+        fontSize: 14,
+        fill: '#1A1A1A',
+        textAlign: 'center',
+        editable: true,
+        hasControls: false,
+        selectable: true,
+      })
+      canvas.add(tb)
+      canvas.setActiveObject(tb)
+      tb.enterEditing()
+      tb.selectAll()
+      tb.once('editing:exited', () => {
+        obj.data = { ...(obj.data ?? {}), labelText: tb.text ?? '' }
+        canvas.remove(tb)
+        // Trigger history push via the object:modified pipeline
+        canvas.fire('object:modified', { target: obj })
+        canvas.requestRenderAll()
+      })
       canvas.requestRenderAll()
     }
   })
@@ -418,10 +549,12 @@ export function initCanvas(
     const pw = data?.paperWidthPx ?? canvas.width
     const ph = data?.paperHeightPx ?? canvas.height
 
+    drawPaperCenterLines(ctx, vt, pw, ph)
     if (data?.showGrid) drawGrid(ctx, vt, pw, ph, data.gridSizeMm ?? 5)
     if ((data?.userGuides ?? []).length > 0) drawUserGuides(ctx, vt, pw, ph, data.userGuides ?? [])
     drawBindingEdge(ctx, vt, pw, ph, data?.bindingSide ?? 'bottom', data?.bindingType ?? 'none')
     drawPerforations(ctx, vt, pw, ph, data?.perforationLines ?? [])
+    drawRectLabels(ctx, vt, canvas)
     if (activeGuides.length > 0) drawGuides(ctx, activeGuides, vt, pw, ph)
   })
 
