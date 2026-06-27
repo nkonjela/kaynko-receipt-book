@@ -313,7 +313,14 @@ export default function Editor() {
           perforationLines: designStore.perforationLines, numbering: { ...numberingStore, total },
           canvasObjects: fabricCanvas.getObjects().map((obj) => {
             const o = obj as unknown as Record<string, unknown>
-            return { type: String(o['type'] ?? 'rect'), left: Number(obj.left ?? 0), top: Number(obj.top ?? 0), width: Number(obj.width ?? 0), height: Number(obj.height ?? 0), scaleX: Number(obj.scaleX ?? 1), scaleY: Number(obj.scaleY ?? 1), text: o['text'] as string | undefined, fontSize: o['fontSize'] as number | undefined, fill: o['fill'] as string | undefined, data: o['data'] as { type?: string } | undefined }
+            // For groups, extract children in group-local coords so PDF renderer can flatten them.
+            const children = obj.type === 'group'
+              ? ((o['_objects'] ?? o['objects']) as unknown[] | undefined ?? []).map((c) => {
+                  const ch = c as Record<string, unknown>
+                  return { type: String(ch['type'] ?? 'rect'), left: Number(ch['left'] ?? 0), top: Number(ch['top'] ?? 0), width: Number(ch['width'] ?? 0), height: Number(ch['height'] ?? 0), scaleX: Number(ch['scaleX'] ?? 1), scaleY: Number(ch['scaleY'] ?? 1), text: ch['text'] as string | undefined, fontSize: ch['fontSize'] as number | undefined, fill: ch['fill'] as string | undefined, stroke: ch['stroke'] as string | undefined, strokeWidth: ch['strokeWidth'] as number | undefined, data: ch['data'] as { type?: string } | undefined }
+                })
+              : undefined
+            return { type: String(o['type'] ?? 'rect'), left: Number(obj.left ?? 0), top: Number(obj.top ?? 0), width: Number(obj.width ?? 0), height: Number(obj.height ?? 0), scaleX: Number(obj.scaleX ?? 1), scaleY: Number(obj.scaleY ?? 1), text: o['text'] as string | undefined, fontSize: o['fontSize'] as number | undefined, fill: o['fill'] as string | undefined, stroke: o['stroke'] as string | undefined, strokeWidth: o['strokeWidth'] as number | undefined, data: o['data'] as { type?: string } | undefined, objects: children }
           }),
         })
         const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' })

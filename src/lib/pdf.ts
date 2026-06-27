@@ -23,6 +23,11 @@ export interface CanvasObject {
   text?: string
   fontSize?: number
   fill?: string
+  stroke?: string
+  strokeWidth?: number
+  angle?: number
+  /** Children of a Group in group-local coordinates (origin = group center). */
+  objects?: CanvasObject[]
   data?: { type?: string }
 }
 
@@ -118,6 +123,40 @@ async function renderObjectsToPage(
     // Y-flip is relative to the slot height, then offset by the slot's Y position
     const yPt = slotOffsetYPt + (slotHeightPt - pxToPt(obj.top) - hPt)
 
+    // Groups (tables, number-field, arrow, etc.) — render children recursively.
+    // Children are stored in group-local coords where (0,0) = group center.
+    if (obj.type === 'group') {
+      if (obj.data?.type === 'number-field') {
+        // Render the sequence number in place of the whole group
+        page.drawText(pageNumber, {
+          x: xPt,
+          y: yPt + hPt / 2,
+          size: 12,
+          font,
+          color: rgb(0.11, 0.31, 0.87),
+        })
+        continue
+      }
+
+      const children = obj.objects ?? []
+      if (children.length === 0) continue
+
+      // Convert each child from group-local space to canvas space.
+      // In Fabric group-local space, (0,0) is the group centre.
+      const halfW = obj.width / 2
+      const halfH = obj.height / 2
+      const flatChildren: CanvasObject[] = children.map((child) => ({
+        ...child,
+        left: obj.left + (halfW + child.left) * scaleX,
+        top: obj.top + (halfH + child.top) * scaleY,
+        scaleX: (child.scaleX ?? 1) * scaleX,
+        scaleY: (child.scaleY ?? 1) * scaleY,
+      }))
+
+      await renderObjectsToPage(page, doc, flatChildren, pageNumber, slotOffsetXPt, slotOffsetYPt, slotHeightPt)
+      continue
+    }
+
     if (obj.data?.type === 'number-field') {
       page.drawText(pageNumber, {
         x: xPt,
@@ -130,10 +169,28 @@ async function renderObjectsToPage(
       const text = obj.text ?? ''
       const size = obj.fontSize ?? 14
       const fillColor = parseColor(obj.fill)
-      page.drawText(text, { x: xPt, y: yPt, size, font, color: fillColor })
+      if (text) page.drawText(text, { x: xPt, y: yPt, size, font, color: fillColor })
     } else if (obj.type === 'rect') {
       const fillColor = parseColor(obj.fill)
-      page.drawRectangle({ x: xPt, y: yPt, width: wPt, height: hPt, color: fillColor })
+      const strokeColor = parseColor(obj.stroke)
+      const sw = pxToPt((obj.strokeWidth ?? 0) * scaleX)
+      page.drawRectangle({
+        x: xPt, y: yPt, width: wPt, height: hPt,
+        color: fillColor,
+        borderColor: obj.stroke && obj.stroke !== 'transparent' ? strokeColor : undefined,
+        borderWidth: sw > 0 ? sw : undefined,
+      })
+    } else if (obj.type === 'line') {
+      // Lines: left/top is the top-left of the bounding box, width/height is the extent.
+      // Draw from top-left to bottom-right of bounding box (handles both H and V lines).
+      const strokeColor = parseColor(obj.stroke ?? obj.fill)
+      const sw = pxToPt((obj.strokeWidth ?? 1) * scaleX)
+      page.drawLine({
+        start: { x: xPt, y: yPt + hPt },
+        end: { x: xPt + wPt, y: yPt },
+        thickness: sw,
+        color: strokeColor,
+      })
     }
   }
 }

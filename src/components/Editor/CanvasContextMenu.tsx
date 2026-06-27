@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
-import type { Canvas as FabricCanvas, FabricObject } from 'fabric'
+import type { Canvas as FabricCanvas, FabricObject, Group } from 'fabric'
+import { rebuildTable } from '@/lib/canvas'
 
 interface Props {
   x: number
@@ -68,14 +69,55 @@ export default function CanvasContextMenu({ x, y, canvas, target, onClose, onCha
     })
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tableData = (target as any).data?.type === 'table' ? (target as any).data : null
+  const tableRows: number = tableData?.rows ?? 0
+  const tableCols: number = tableData?.cols ?? 0
+
+  function tableAction(partial: { rows?: number; cols?: number }) {
+    action(() => {
+      rebuildTable(canvas, target as unknown as Group, partial)
+      onChanged()
+    })
+  }
+
   const itemClass = 'w-full text-left px-4 py-2 text-sm hover:bg-krb-bg transition-colors'
+  const disabledClass = 'w-full text-left px-4 py-2 text-sm text-krb-ink3 cursor-not-allowed opacity-50'
 
   return (
     <div
       ref={menuRef}
       style={{ position: 'fixed', left: x, top: y, zIndex: 1000 }}
-      className="bg-white border border-krb-rule rounded-xl shadow-xl overflow-hidden min-w-[160px]"
+      className="bg-white border border-krb-rule rounded-xl shadow-xl overflow-hidden min-w-[180px]"
     >
+      {tableData && (
+        <>
+          <div className="px-4 py-1.5 text-xs font-semibold text-krb-ink3 uppercase tracking-wider bg-krb-bg border-b border-krb-rule">Table</div>
+          <button type="button" className={itemClass}
+            onClick={() => tableAction({ rows: tableRows + 1 })}>
+            Add row
+          </button>
+          {tableRows > 1
+            ? <button type="button" className={itemClass}
+                onClick={() => tableAction({ rows: tableRows - 1 })}>
+                Remove last row
+              </button>
+            : <span className={disabledClass}>Remove last row</span>
+          }
+          <button type="button" className={itemClass}
+            onClick={() => tableAction({ cols: tableCols + 1 })}>
+            Add column
+          </button>
+          {tableCols > 1
+            ? <button type="button" className={itemClass}
+                onClick={() => tableAction({ cols: tableCols - 1 })}>
+                Remove last column
+              </button>
+            : <span className={disabledClass}>Remove last column</span>
+          }
+          <div className="border-t border-krb-rule my-0.5" />
+        </>
+      )}
       <button type="button" className={itemClass} onClick={duplicate}>Duplicate</button>
       <button type="button" className={itemClass} onClick={toFront}>Bring to front</button>
       <button type="button" className={itemClass} onClick={toBack}>Send to back</button>

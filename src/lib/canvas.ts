@@ -1,10 +1,14 @@
-import { Canvas, StaticCanvas, Rect, Textbox, Group, Ellipse, Line, Point, FabricText } from 'fabric'
-import type { FabricObject } from 'fabric'
+import { Canvas, StaticCanvas, Rect, Textbox, Group, Ellipse, Line, Point, FabricText, FabricObject } from 'fabric'
 import { getPaperDimensions, getSlotDimensions } from '@/lib/paperSizes'
 import type { ReceiptsPerPage } from '@/lib/paperSizes'
 import { computeGuides, drawGuides } from '@/lib/guides'
 import type { GuideLineSpec, UserGuide } from '@/lib/guides'
 import type { PaperSizeName, Orientation, CustomSize, PerforationLine, BindingSide, BindingType } from '@/store/designStore'
+
+// Ensure the custom `data` field is included in Fabric's JSON serialization for all objects.
+// Without this, group.data (table metadata, number-field type, etc.) is silently dropped on
+// canvas.toJSON() and lost when designs are saved and reloaded.
+FabricObject.customProperties = ['data']
 
 export const SCHEMA_VERSION = 1
 const MIN_ZOOM = 0.05
@@ -562,86 +566,190 @@ export function addArrow(canvas: Canvas): Group {
   return group
 }
 
-export function addTable(canvas: Canvas, rows: number, cols: number, cellWMm = 30, cellHMm = 10): Group {
+export interface TableConfig {
+  rows: number
+  cols: number
+  rowHeightsMm: number[]
+  colWidthsMm: number[]
+  borderColor: string
+  borderWidth: number
+  headerBg: string
+  altRowBg: string
+  cellPaddingMm: number
+  cellTexts?: string[][]
+}
+
+function buildTableGroup(cfg: TableConfig): Group {
   const PX = 96 / 25.4
-  const cellW = Math.round(cellWMm * PX)
-  const cellH = Math.round(cellHMm * PX)
-  const totalW = cols * cellW
-  const totalH = rows * cellH
+  const pad = Math.max(1, Math.round(cfg.cellPaddingMm * PX))
+  const rowHs = cfg.rowHeightsMm.map((h) => Math.max(8, Math.round(h * PX)))
+  const colWs = cfg.colWidthsMm.map((w) => Math.max(10, Math.round(w * PX)))
+  const totalW = colWs.reduce((a, b) => a + b, 0)
+  const totalH = rowHs.reduce((a, b) => a + b, 0)
+
+  // Cumulative row/col start positions in group-local space (origin = group center)
+  const rowYs: number[] = []
+  let yCur = -totalH / 2
+  for (const h of rowHs) { rowYs.push(yCur); yCur += h }
+
+  const colXs: number[] = []
+  let xCur = -totalW / 2
+  for (const w of colWs) { colXs.push(xCur); xCur += w }
 
   const items: FabricObject[] = []
 
-  // White background + outer border
+  // Outer background + border
   items.push(new Rect({
-    width: totalW,
-    height: totalH,
+    width: totalW, height: totalH,
     fill: '#ffffff',
-    stroke: '#1A1A1A',
-    strokeWidth: 1,
-    originX: 'center',
-    originY: 'center',
-    selectable: false,
-    evented: false,
+    stroke: cfg.borderColor, strokeWidth: cfg.borderWidth,
+    originX: 'center', originY: 'center',
+    selectable: false, evented: false,
   }))
 
+  // Row background fills (header + alternating rows)
+  for (let r = 0; r < cfg.rows; r++) {
+    const bg = r === 0 ? cfg.headerBg : (r % 2 === 0 ? cfg.altRowBg : '')
+    if (bg) {
+      items.push(new Rect({
+        left: -totalW / 2, top: rowYs[r],
+        width: totalW, height: rowHs[r],
+        fill: bg, strokeWidth: 0,
+        originX: 'left', originY: 'top',
+        selectable: false, evented: false,
+      }))
+    }
+  }
+
+  const sepW = Math.max(0.25, cfg.borderWidth * 0.5)
+
   // Row separator lines
-  for (let r = 1; r < rows; r++) {
-    const y = r * cellH - totalH / 2
-    items.push(new Line([-totalW / 2, y, totalW / 2, y], {
-      stroke: '#1A1A1A',
-      strokeWidth: 0.5,
-      selectable: false,
-      evented: false,
+  for (let r = 1; r < cfg.rows; r++) {
+    items.push(new Line([-totalW / 2, rowYs[r], totalW / 2, rowYs[r]], {
+      stroke: cfg.borderColor, strokeWidth: sepW,
+      selectable: false, evented: false,
     }))
   }
 
   // Column separator lines
-  for (let c = 1; c < cols; c++) {
-    const x = c * cellW - totalW / 2
-    items.push(new Line([x, -totalH / 2, x, totalH / 2], {
-      stroke: '#1A1A1A',
-      strokeWidth: 0.5,
-      selectable: false,
-      evented: false,
+  for (let c = 1; c < cfg.cols; c++) {
+    items.push(new Line([colXs[c], -totalH / 2, colXs[c], totalH / 2], {
+      stroke: cfg.borderColor, strokeWidth: sepW,
+      selectable: false, evented: false,
     }))
   }
 
-  // One editable Textbox per cell
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const x = c * cellW - totalW / 2 + 3
-      const y = r * cellH - totalH / 2 + 2
-      items.push(new Textbox('', {
-        left: x,
-        top: y,
-        width: cellW - 6,
-        height: cellH - 4,
+  // One Textbox per cell (row-major order)
+  for (let r = 0; r < cfg.rows; r++) {
+    for (let c = 0; c < cfg.cols; c++) {
+      items.push(new Textbox(cfg.cellTexts?.[r]?.[c] ?? '', {
+        left: colXs[c] + pad,
+        top: rowYs[r] + pad,
+        width: Math.max(6, colWs[c] - pad * 2),
+        height: Math.max(6, rowHs[r] - pad * 2),
         fontSize: r === 0 ? 10 : 9,
         fontWeight: r === 0 ? 'bold' : 'normal',
         fill: '#1A1A1A',
         fontFamily: 'Arial, sans-serif',
         textAlign: 'left',
         editable: true,
-        lockMovementX: true,
-        lockMovementY: true,
-        lockScalingX: true,
-        lockScalingY: true,
-        hasControls: false,
-        hasBorders: false,
+        lockMovementX: true, lockMovementY: true,
+        lockScalingX: true, lockScalingY: true,
+        hasControls: false, hasBorders: false,
         padding: 1,
       }))
     }
   }
 
-  const group = new Group(items, {
-    ...centrePos(canvas, totalW, totalH),
-    subTargetCheck: true,
-  })
-  Object.assign(group, { data: { type: 'table', rows, cols, cellWMm, cellHMm } })
+  const group = new Group(items, { subTargetCheck: true })
+  const avgCellW = cfg.colWidthsMm.reduce((a, b) => a + b, 0) / cfg.cols
+  const avgCellH = cfg.rowHeightsMm.reduce((a, b) => a + b, 0) / cfg.rows
+  Object.assign(group, { data: {
+    type: 'table',
+    rows: cfg.rows, cols: cfg.cols,
+    cellWMm: avgCellW, cellHMm: avgCellH,
+    rowHeightsMm: cfg.rowHeightsMm,
+    colWidthsMm: cfg.colWidthsMm,
+    borderColor: cfg.borderColor, borderWidth: cfg.borderWidth,
+    headerBg: cfg.headerBg, altRowBg: cfg.altRowBg,
+    cellPaddingMm: cfg.cellPaddingMm,
+  } })
+  return group
+}
+
+export function addTable(canvas: Canvas, rows: number, cols: number, cellWMm = 30, cellHMm = 10): Group {
+  const cfg: TableConfig = {
+    rows, cols,
+    rowHeightsMm: Array<number>(rows).fill(cellHMm),
+    colWidthsMm: Array<number>(cols).fill(cellWMm),
+    borderColor: '#1A1A1A', borderWidth: 1,
+    headerBg: '', altRowBg: '', cellPaddingMm: 1,
+  }
+  const group = buildTableGroup(cfg)
+  group.set(centrePos(canvas, group.width, group.height))
   canvas.add(group)
   canvas.setActiveObject(group)
   canvas.requestRenderAll()
   return group
+}
+
+export function rebuildTable(canvas: Canvas, group: Group, newCfg: Partial<TableConfig>): Group {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const d = (group as any).data as Record<string, unknown>
+  const existingRows = Number(d?.['rows'] ?? 2)
+  const existingCols = Number(d?.['cols'] ?? 2)
+
+  // Extract current cell text from the textboxes (row-major order)
+  const textboxes = group.getObjects().filter((o: FabricObject) => o.type === 'textbox') as Textbox[]
+  const existingTexts: string[][] = []
+  for (let r = 0; r < existingRows; r++) {
+    existingTexts.push([])
+    for (let c = 0; c < existingCols; c++) {
+      existingTexts[r].push(textboxes[r * existingCols + c]?.text ?? '')
+    }
+  }
+
+  const savedLeft = group.left
+  const savedTop = group.top
+  const savedScaleX = group.scaleX ?? 1
+  const savedScaleY = group.scaleY ?? 1
+
+  const cfg: TableConfig = {
+    rows: Number(d?.['rows'] ?? 2),
+    cols: Number(d?.['cols'] ?? 2),
+    rowHeightsMm: (d?.['rowHeightsMm'] as number[] | undefined) ?? Array<number>(existingRows).fill(Number(d?.['cellHMm'] ?? 10)),
+    colWidthsMm: (d?.['colWidthsMm'] as number[] | undefined) ?? Array<number>(existingCols).fill(Number(d?.['cellWMm'] ?? 30)),
+    borderColor: String(d?.['borderColor'] ?? '#1A1A1A'),
+    borderWidth: Number(d?.['borderWidth'] ?? 1),
+    headerBg: String(d?.['headerBg'] ?? ''),
+    altRowBg: String(d?.['altRowBg'] ?? ''),
+    cellPaddingMm: Number(d?.['cellPaddingMm'] ?? 1),
+    ...newCfg,
+  }
+
+  // Fit existing text into new cell grid (truncate extra rows/cols, fill new with '')
+  const newTexts: string[][] = []
+  for (let r = 0; r < cfg.rows; r++) {
+    newTexts.push([])
+    for (let c = 0; c < cfg.cols; c++) {
+      newTexts[r].push(existingTexts[r]?.[c] ?? '')
+    }
+  }
+  cfg.cellTexts = newTexts
+
+  // Keep row/col arrays sized to match new row/col counts
+  while (cfg.rowHeightsMm.length < cfg.rows) cfg.rowHeightsMm.push(cfg.rowHeightsMm[cfg.rowHeightsMm.length - 1] ?? 10)
+  cfg.rowHeightsMm = cfg.rowHeightsMm.slice(0, cfg.rows)
+  while (cfg.colWidthsMm.length < cfg.cols) cfg.colWidthsMm.push(cfg.colWidthsMm[cfg.colWidthsMm.length - 1] ?? 30)
+  cfg.colWidthsMm = cfg.colWidthsMm.slice(0, cfg.cols)
+
+  canvas.remove(group)
+  const newGroup = buildTableGroup(cfg)
+  newGroup.set({ left: savedLeft, top: savedTop, scaleX: savedScaleX, scaleY: savedScaleY })
+  canvas.add(newGroup)
+  canvas.setActiveObject(newGroup)
+  canvas.requestRenderAll()
+  return newGroup
 }
 
 export function addImagePlaceholder(canvas: Canvas): Group {
