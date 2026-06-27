@@ -63,22 +63,23 @@ export function updateCanvasData(canvas: Canvas, updates: Partial<KRBCanvasData>
   canvas.requestRenderAll()
 }
 
-// Zoom on scroll (no modifier needed — matches CorelDraw/Affinity behaviour).
-// Space+drag or middle-click+drag pans. containerEl should be canvasAreaRef.
+// Zoom on scroll, Space+drag or middle-click+drag pans. containerEl should be canvasAreaRef.
 export function attachZoomPan(canvas: Canvas, containerEl: HTMLElement): () => void {
   let isPanning = false
   let panStart = { x: 0, y: 0 }
 
-  function onWheel(e: WheelEvent) {
+  // Use Fabric's own mouse:wheel event — avoids the upper-canvas event interception issue
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleWheel = (opt: any) => {
+    const e = opt.e as WheelEvent
     e.preventDefault()
     e.stopPropagation()
-    const delta = e.deltaY
-    const zoom = canvas.getZoom() * (0.999 ** delta)
+    const zoom = canvas.getZoom() * (0.999 ** e.deltaY)
     const rect = containerEl.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    applyZoom(canvas, zoom, new Point(x, y))
+    applyZoom(canvas, zoom, new Point(e.clientX - rect.left, e.clientY - rect.top))
   }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(canvas as any).on('mouse:wheel', handleWheel)
 
   function onKeyDown(e: KeyboardEvent) {
     const el = document.activeElement
@@ -108,8 +109,10 @@ export function attachZoomPan(canvas: Canvas, containerEl: HTMLElement): () => v
   }
 
   function onMouseMove(e: MouseEvent) {
-    if ((!isPanning && e.button !== 1) || e.buttons === 0) return
-    if (!isPanning && !(e.buttons & 4)) return
+    // e.button is meaningless in mousemove — use e.buttons bitmask instead
+    const isMiddleDrag = (e.buttons & 4) !== 0
+    if (!isPanning && !isMiddleDrag) return
+    if (e.buttons === 0) return
     const dx = e.clientX - panStart.x
     const dy = e.clientY - panStart.y
     canvas.relativePan(new Point(dx, dy))
@@ -117,11 +120,9 @@ export function attachZoomPan(canvas: Canvas, containerEl: HTMLElement): () => v
   }
 
   function onMouseUp() {
-    if (isPanning) canvas.defaultCursor = 'grab'
-    else canvas.defaultCursor = 'default'
+    canvas.defaultCursor = isPanning ? 'grab' : 'default'
   }
 
-  containerEl.addEventListener('wheel', onWheel, { passive: false })
   containerEl.addEventListener('mousedown', onMouseDown)
   containerEl.addEventListener('mousemove', onMouseMove)
   containerEl.addEventListener('mouseup', onMouseUp)
@@ -129,7 +130,8 @@ export function attachZoomPan(canvas: Canvas, containerEl: HTMLElement): () => v
   window.addEventListener('keyup', onKeyUp)
 
   return () => {
-    containerEl.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(canvas as any).off('mouse:wheel', handleWheel)
     containerEl.removeEventListener('mousedown', onMouseDown)
     containerEl.removeEventListener('mousemove', onMouseMove)
     containerEl.removeEventListener('mouseup', onMouseUp)
@@ -261,59 +263,6 @@ function drawGrid(
   for (let y = 0; y <= paperH + gridSizePx; y += gridSizePx) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(paperW, y); ctx.stroke()
   }
-  ctx.restore()
-}
-
-function drawSafeZone(
-  ctx: CanvasRenderingContext2D,
-  vt: number[],
-  paperW: number,
-  paperH: number,
-): void {
-  const safeZonePx = 5 * (96 / 25.4)
-  ctx.save()
-  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
-  const z = vt[0] || 1
-  ctx.strokeStyle = 'rgba(0, 140, 200, 0.55)'
-  ctx.lineWidth = 0.75 / z
-  ctx.setLineDash([5 / z, 3 / z])
-  ctx.strokeRect(safeZonePx, safeZonePx, paperW - safeZonePx * 2, paperH - safeZonePx * 2)
-  ctx.setLineDash([])
-  ctx.font = `bold ${8 / z}px Arial`
-  ctx.fillStyle = 'rgba(0, 140, 200, 0.55)'
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'top'
-  ctx.fillText('SAFE ZONE', safeZonePx + 3 / z, safeZonePx + 2 / z)
-  ctx.restore()
-}
-
-function drawBleedIndicator(
-  ctx: CanvasRenderingContext2D,
-  vt: number[],
-  paperW: number,
-  paperH: number,
-): void {
-  const bleedPx = 3 * (96 / 25.4)
-  ctx.save()
-  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
-  const z = vt[0] || 1
-  // Pink bleed-zone tint at each edge
-  ctx.fillStyle = 'rgba(220, 30, 30, 0.07)'
-  ctx.fillRect(0, 0, paperW, bleedPx)
-  ctx.fillRect(0, paperH - bleedPx, paperW, bleedPx)
-  ctx.fillRect(0, 0, bleedPx, paperH)
-  ctx.fillRect(paperW - bleedPx, 0, bleedPx, paperH)
-  // Dashed red trim-edge border
-  ctx.strokeStyle = 'rgba(200, 30, 30, 0.45)'
-  ctx.lineWidth = 0.5 / z
-  ctx.setLineDash([3 / z, 2 / z])
-  ctx.strokeRect(0, 0, paperW, paperH)
-  ctx.setLineDash([])
-  ctx.font = `bold ${7 / z}px Arial`
-  ctx.fillStyle = 'rgba(200, 30, 30, 0.55)'
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'top'
-  ctx.fillText('BLEED 3mm', 2 / z, 2 / z)
   ctx.restore()
 }
 
@@ -469,8 +418,6 @@ export function initCanvas(
     if ((data?.userGuides ?? []).length > 0) drawUserGuides(ctx, vt, pw, ph, data.userGuides ?? [])
     drawBindingEdge(ctx, vt, pw, ph, data?.bindingSide ?? 'bottom', data?.bindingType ?? 'none')
     drawPerforations(ctx, vt, pw, ph, data?.perforationLines ?? [])
-    if (data?.bleedEnabled) drawBleedIndicator(ctx, vt, pw, ph)
-    if (data?.showSafeZone) drawSafeZone(ctx, vt, pw, ph)
     if (activeGuides.length > 0) drawGuides(ctx, activeGuides, vt, pw, ph)
   })
 

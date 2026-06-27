@@ -416,10 +416,14 @@ export default function Editor() {
   const numberingPreview = generateNumbers({ ...numberingStore, total: 3 }).join(', ')
 
   const vt = viewportTransform
-  const paperDisplayW = dims.widthPx96 * vt[0]
-  const paperDisplayH = dims.heightPx96 * vt[3]
+  const z = vt[0] || 1
+  const paperDisplayW = dims.widthPx96 * z
+  const paperDisplayH = dims.heightPx96 * (vt[3] || 1)
   const paperLeft = vt[4]
   const paperTop = vt[5]
+  // Bleed (3mm) and safe zone (5mm) display sizes in screen pixels
+  const BLEED_DISPLAY = 3 * (96 / 25.4) * z
+  const SAFE_DISPLAY = 5 * (96 / 25.4) * z
 
   const rulerW = Math.max(0, containerSize.w - 20)
   const rulerH = Math.max(0, containerSize.h - 20)
@@ -576,46 +580,49 @@ export default function Editor() {
               ? <p className="text-xs text-krb-ink3 px-1 mb-2">Set binding type in Page Setup to enable binding options.</p>
               : (
                 <div className="px-1 mb-3">
-                  <p className="text-xs text-krb-ink3 mb-2 font-medium">Which edge gets bound?</p>
-                  {/* Visual binding selector — tap the side that gets stapled/glued */}
-                  <div className="flex flex-col items-center gap-1 select-none">
-                    <button type="button" onClick={() => designStore.setBindingSide('top')}
-                      title="Bind at top"
-                      className={`h-6 w-24 rounded text-[10px] font-bold tracking-wide transition-all ${designStore.bindingSide === 'top' ? 'bg-krb-navy text-white shadow' : 'border border-krb-rule text-krb-ink3 hover:border-krb-navy hover:text-krb-navy'}`}>
-                      ▲ TOP
-                    </button>
-                    <div className="flex items-center gap-1">
-                      <button type="button" onClick={() => designStore.setBindingSide('left')}
-                        title="Bind at left"
-                        className={`w-6 h-20 rounded text-[9px] font-bold flex items-center justify-center transition-all [writing-mode:vertical-lr] rotate-180 ${designStore.bindingSide === 'left' ? 'bg-krb-navy text-white shadow' : 'border border-krb-rule text-krb-ink3 hover:border-krb-navy hover:text-krb-navy'}`}>
-                        LEFT ◄
-                      </button>
-                      {/* Mini page preview showing selected binding edge */}
-                      <div className="relative w-14 h-20 rounded border-2 border-krb-rule bg-white shadow-sm overflow-hidden flex-shrink-0">
-                        <div className={`absolute bg-krb-navy/30 transition-all ${
-                          designStore.bindingSide === 'top'    ? 'inset-x-0 top-0 h-3' :
-                          designStore.bindingSide === 'bottom' ? 'inset-x-0 bottom-0 h-3' :
-                          designStore.bindingSide === 'left'   ? 'inset-y-0 left-0 w-3' :
-                                                                 'inset-y-0 right-0 w-3'
-                        }`} />
-                        <div className="absolute inset-4 flex flex-col gap-1.5 justify-center pointer-events-none">
-                          {[0, 1, 2, 3].map((i) => <div key={i} className="h-px bg-krb-rule rounded" />)}
-                        </div>
-                      </div>
-                      <button type="button" onClick={() => designStore.setBindingSide('right')}
-                        title="Bind at right"
-                        className={`w-6 h-20 rounded text-[9px] font-bold flex items-center justify-center transition-all [writing-mode:vertical-lr] ${designStore.bindingSide === 'right' ? 'bg-krb-navy text-white shadow' : 'border border-krb-rule text-krb-ink3 hover:border-krb-navy hover:text-krb-navy'}`}>
-                        ► RIGHT
-                      </button>
-                    </div>
-                    <button type="button" onClick={() => designStore.setBindingSide('bottom')}
-                      title="Bind at bottom"
-                      className={`h-6 w-24 rounded text-[10px] font-bold tracking-wide transition-all ${designStore.bindingSide === 'bottom' ? 'bg-krb-navy text-white shadow' : 'border border-krb-rule text-krb-ink3 hover:border-krb-navy hover:text-krb-navy'}`}>
-                      ▼ BOTTOM
-                    </button>
+                  <p className="text-xs text-krb-ink3 mb-2">Tap which edge gets stapled or glued:</p>
+                  {/* Book SVG grid — each shows a receipt book from above with spine on the correct edge */}
+                  <div className="grid grid-cols-2 gap-1.5 select-none">
+                    {(['left', 'top', 'right', 'bottom'] as const).map((side) => {
+                      const sel = designStore.bindingSide === side
+                      const sp = sel ? '#1A3A5C' : '#94A3B8'
+                      const ln = '#E8E5E0'
+                      const labels: Record<string, [string, string]> = {
+                        left:   ['LEFT',   'opens right →'],
+                        top:    ['TOP',    'flips upward ↑'],
+                        right:  ['RIGHT',  '← opens left'],
+                        bottom: ['BOTTOM', 'tears off ↓'],
+                      }
+                      const [title, desc] = labels[side]
+                      return (
+                        <button key={side} type="button"
+                          onClick={() => designStore.setBindingSide(side)}
+                          title={`${title} — ${desc}`}
+                          className={`flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-lg border transition-all ${sel ? 'border-krb-navy bg-krb-navy/5 shadow-sm' : 'border-krb-rule hover:border-krb-navy/50'}`}>
+                          <svg width="38" height="46" viewBox="0 0 38 46" fill="none">
+                            {/* Book body */}
+                            <rect x="1" y="1" width="36" height="44" rx="2" fill="white" stroke={sp} strokeWidth={sel ? 1.5 : 0.75}/>
+                            {/* Spine strip */}
+                            {side === 'left'   && <rect x="1"  y="1"  width="6"  height="44" rx="1.5" fill={sp}/>}
+                            {side === 'right'  && <rect x="31" y="1"  width="6"  height="44" rx="1.5" fill={sp}/>}
+                            {side === 'top'    && <rect x="1"  y="1"  width="36" height="7"  rx="1.5" fill={sp}/>}
+                            {side === 'bottom' && <rect x="1"  y="38" width="36" height="7"  rx="1.5" fill={sp}/>}
+                            {/* Receipt lines */}
+                            {(side === 'left' || side === 'right') && [16, 22, 28, 34].map((y) => (
+                              <line key={y} x1={side === 'left' ? 10 : 4} y1={y} x2={side === 'left' ? 34 : 28} y2={y} stroke={ln} strokeWidth="2"/>
+                            ))}
+                            {(side === 'top' || side === 'bottom') && [16, 22, 28].map((y) => (
+                              <line key={y} x1="5" y1={y} x2="33" y2={y} stroke={ln} strokeWidth="2"/>
+                            ))}
+                          </svg>
+                          <span className={`text-[9px] font-bold ${sel ? 'text-krb-navy' : 'text-krb-ink3'}`}>{title}</span>
+                          <span className={`text-[8px] leading-tight text-center ${sel ? 'text-krb-navy/70' : 'text-krb-ink3/60'}`}>{desc}</span>
+                        </button>
+                      )
+                    })}
                   </div>
-                  {designStore.bindingType === 'wire-o' && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-2">Keep content 8mm from spine.</p>}
-                  {designStore.bindingType === 'saddle' && numberingStore.total % 4 !== 0 && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-2">Saddle stitch needs multiples of 4 pages.</p>}
+                  {designStore.bindingType === 'wire-o' && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-2">Keep content 8 mm from the spine edge.</p>}
+                  {designStore.bindingType === 'saddle' && numberingStore.total % 4 !== 0 && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-2">Saddle stitch works best with multiples of 4 pages.</p>}
                 </div>
               )
             }
@@ -701,9 +708,21 @@ export default function Editor() {
             onMouseUp={handleGuideMouseUp}
             onMouseLeave={handleGuideMouseUp}
             onDoubleClick={handleCanvasAreaDblClick}>
+            {/* Bleed boundary — 3 mm OUTSIDE the trim edge (behind the paper) */}
+            {designStore.bleedEnabled && (
+              <div style={{ position: 'absolute', left: paperLeft - BLEED_DISPLAY, top: paperTop - BLEED_DISPLAY, width: paperDisplayW + BLEED_DISPLAY * 2, height: paperDisplayH + BLEED_DISPLAY * 2, border: '1px dashed rgba(200,30,30,0.6)', zIndex: 0, pointerEvents: 'none', boxSizing: 'border-box' }}>
+                <span style={{ position: 'absolute', top: 2, left: 3, fontSize: 9, color: 'rgba(200,30,30,0.75)', fontFamily: 'Arial,sans-serif', fontWeight: 'bold', lineHeight: 1, whiteSpace: 'nowrap', userSelect: 'none' }}>BLEED 3mm</span>
+              </div>
+            )}
             {/* Paper background */}
-            <div style={{ position: 'absolute', left: paperLeft, top: paperTop, width: paperDisplayW, height: paperDisplayH, background: designStore.pageBackgroundColor, boxShadow: '0 4px 20px rgba(0,0,0,0.18),0 1px 4px rgba(0,0,0,0.12)', zIndex: 0, pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', left: paperLeft, top: paperTop, width: paperDisplayW, height: paperDisplayH, background: designStore.pageBackgroundColor, boxShadow: '0 4px 20px rgba(0,0,0,0.18),0 1px 4px rgba(0,0,0,0.12)', zIndex: 1, pointerEvents: 'none' }} />
             <canvas ref={canvasElRef} />
+            {/* Safe zone — 5 mm INSIDE the trim edge (above the canvas) */}
+            {designStore.showSafeZone && (
+              <div style={{ position: 'absolute', left: paperLeft + SAFE_DISPLAY, top: paperTop + SAFE_DISPLAY, width: paperDisplayW - SAFE_DISPLAY * 2, height: paperDisplayH - SAFE_DISPLAY * 2, border: '1px dashed rgba(0,140,200,0.6)', zIndex: 3, pointerEvents: 'none', boxSizing: 'border-box' }}>
+                <span style={{ position: 'absolute', top: 2, left: 3, fontSize: 9, color: 'rgba(0,140,200,0.75)', fontFamily: 'Arial,sans-serif', fontWeight: 'bold', lineHeight: 1, whiteSpace: 'nowrap', userSelect: 'none' }}>SAFE ZONE</span>
+              </div>
+            )}
             {guidePreviewStyle && <div style={guidePreviewStyle} />}
             {dimTooltip && (
               <div style={{ position: 'absolute', left: dimTooltip.x, top: dimTooltip.y, zIndex: 30, background: 'rgba(30,30,30,0.85)', color: '#fff', fontSize: 11, fontFamily: 'monospace', padding: '2px 8px', borderRadius: 4, pointerEvents: 'none', whiteSpace: 'nowrap' }}>
