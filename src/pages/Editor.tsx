@@ -116,6 +116,18 @@ export default function Editor() {
   useEffect(() => {
     const canvas = fabricCanvasRef.current
     if (!canvas) return
+    updateCanvasData(canvas, { showSafeZone: designStore.showSafeZone })
+  }, [designStore.showSafeZone])
+
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+    updateCanvasData(canvas, { bleedEnabled: designStore.bleedEnabled })
+  }, [designStore.bleedEnabled])
+
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
     updateCanvasData(canvas, { userGuides })
   }, [userGuides])
 
@@ -131,6 +143,8 @@ export default function Editor() {
       showGrid: designStore.showGrid,
       gridSizeMm: designStore.gridSizeMm,
       userGuides,
+      showSafeZone: designStore.showSafeZone,
+      bleedEnabled: designStore.bleedEnabled,
       onDimensions: (info) => setDimTooltip(info),
     }
 
@@ -559,20 +573,49 @@ export default function Editor() {
 
           <SidebarSection title="Binding & Perforation">
             {designStore.bindingType === 'none'
-              ? <p className="text-xs text-krb-ink3 px-1 mb-2">Set binding type in Page Setup.</p>
+              ? <p className="text-xs text-krb-ink3 px-1 mb-2">Set binding type in Page Setup to enable binding options.</p>
               : (
                 <div className="px-1 mb-3">
-                  <p className="text-xs text-krb-ink3 mb-1">Binding edge</p>
-                  <div className="grid grid-cols-4 gap-1">
-                    {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
-                      <button key={side} type="button" onClick={() => designStore.setBindingSide(side)}
-                        className={`py-1 rounded text-xs border transition-colors ${designStore.bindingSide === side ? 'bg-krb-navy text-white border-krb-navy' : 'border-krb-rule text-krb-ink3 hover:border-krb-navy'}`}>
-                        {side[0].toUpperCase()}
+                  <p className="text-xs text-krb-ink3 mb-2 font-medium">Which edge gets bound?</p>
+                  {/* Visual binding selector — tap the side that gets stapled/glued */}
+                  <div className="flex flex-col items-center gap-1 select-none">
+                    <button type="button" onClick={() => designStore.setBindingSide('top')}
+                      title="Bind at top"
+                      className={`h-6 w-24 rounded text-[10px] font-bold tracking-wide transition-all ${designStore.bindingSide === 'top' ? 'bg-krb-navy text-white shadow' : 'border border-krb-rule text-krb-ink3 hover:border-krb-navy hover:text-krb-navy'}`}>
+                      ▲ TOP
+                    </button>
+                    <div className="flex items-center gap-1">
+                      <button type="button" onClick={() => designStore.setBindingSide('left')}
+                        title="Bind at left"
+                        className={`w-6 h-20 rounded text-[9px] font-bold flex items-center justify-center transition-all [writing-mode:vertical-lr] rotate-180 ${designStore.bindingSide === 'left' ? 'bg-krb-navy text-white shadow' : 'border border-krb-rule text-krb-ink3 hover:border-krb-navy hover:text-krb-navy'}`}>
+                        LEFT ◄
                       </button>
-                    ))}
+                      {/* Mini page preview showing selected binding edge */}
+                      <div className="relative w-14 h-20 rounded border-2 border-krb-rule bg-white shadow-sm overflow-hidden flex-shrink-0">
+                        <div className={`absolute bg-krb-navy/30 transition-all ${
+                          designStore.bindingSide === 'top'    ? 'inset-x-0 top-0 h-3' :
+                          designStore.bindingSide === 'bottom' ? 'inset-x-0 bottom-0 h-3' :
+                          designStore.bindingSide === 'left'   ? 'inset-y-0 left-0 w-3' :
+                                                                 'inset-y-0 right-0 w-3'
+                        }`} />
+                        <div className="absolute inset-4 flex flex-col gap-1.5 justify-center pointer-events-none">
+                          {[0, 1, 2, 3].map((i) => <div key={i} className="h-px bg-krb-rule rounded" />)}
+                        </div>
+                      </div>
+                      <button type="button" onClick={() => designStore.setBindingSide('right')}
+                        title="Bind at right"
+                        className={`w-6 h-20 rounded text-[9px] font-bold flex items-center justify-center transition-all [writing-mode:vertical-lr] ${designStore.bindingSide === 'right' ? 'bg-krb-navy text-white shadow' : 'border border-krb-rule text-krb-ink3 hover:border-krb-navy hover:text-krb-navy'}`}>
+                        ► RIGHT
+                      </button>
+                    </div>
+                    <button type="button" onClick={() => designStore.setBindingSide('bottom')}
+                      title="Bind at bottom"
+                      className={`h-6 w-24 rounded text-[10px] font-bold tracking-wide transition-all ${designStore.bindingSide === 'bottom' ? 'bg-krb-navy text-white shadow' : 'border border-krb-rule text-krb-ink3 hover:border-krb-navy hover:text-krb-navy'}`}>
+                      ▼ BOTTOM
+                    </button>
                   </div>
-                  {designStore.bindingType === 'wire-o' && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-1">Keep content 8mm from spine.</p>}
-                  {designStore.bindingType === 'saddle' && numberingStore.total % 4 !== 0 && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-1">Saddle stitch needs multiples of 4.</p>}
+                  {designStore.bindingType === 'wire-o' && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-2">Keep content 8mm from spine.</p>}
+                  {designStore.bindingType === 'saddle' && numberingStore.total % 4 !== 0 && <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-2">Saddle stitch needs multiples of 4 pages.</p>}
                 </div>
               )
             }

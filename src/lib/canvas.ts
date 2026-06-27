@@ -22,6 +22,8 @@ export interface KRBCanvasData {
   showGrid: boolean
   gridSizeMm: number
   userGuides: UserGuide[]
+  showSafeZone: boolean
+  bleedEnabled: boolean
 }
 
 type AnnotatedCanvas = Canvas & { data: KRBCanvasData }
@@ -262,6 +264,59 @@ function drawGrid(
   ctx.restore()
 }
 
+function drawSafeZone(
+  ctx: CanvasRenderingContext2D,
+  vt: number[],
+  paperW: number,
+  paperH: number,
+): void {
+  const safeZonePx = 5 * (96 / 25.4)
+  ctx.save()
+  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
+  const z = vt[0] || 1
+  ctx.strokeStyle = 'rgba(0, 140, 200, 0.55)'
+  ctx.lineWidth = 0.75 / z
+  ctx.setLineDash([5 / z, 3 / z])
+  ctx.strokeRect(safeZonePx, safeZonePx, paperW - safeZonePx * 2, paperH - safeZonePx * 2)
+  ctx.setLineDash([])
+  ctx.font = `bold ${8 / z}px Arial`
+  ctx.fillStyle = 'rgba(0, 140, 200, 0.55)'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  ctx.fillText('SAFE ZONE', safeZonePx + 3 / z, safeZonePx + 2 / z)
+  ctx.restore()
+}
+
+function drawBleedIndicator(
+  ctx: CanvasRenderingContext2D,
+  vt: number[],
+  paperW: number,
+  paperH: number,
+): void {
+  const bleedPx = 3 * (96 / 25.4)
+  ctx.save()
+  ctx.setTransform(vt[0], vt[1], vt[2], vt[3], vt[4], vt[5])
+  const z = vt[0] || 1
+  // Pink bleed-zone tint at each edge
+  ctx.fillStyle = 'rgba(220, 30, 30, 0.07)'
+  ctx.fillRect(0, 0, paperW, bleedPx)
+  ctx.fillRect(0, paperH - bleedPx, paperW, bleedPx)
+  ctx.fillRect(0, 0, bleedPx, paperH)
+  ctx.fillRect(paperW - bleedPx, 0, bleedPx, paperH)
+  // Dashed red trim-edge border
+  ctx.strokeStyle = 'rgba(200, 30, 30, 0.45)'
+  ctx.lineWidth = 0.5 / z
+  ctx.setLineDash([3 / z, 2 / z])
+  ctx.strokeRect(0, 0, paperW, paperH)
+  ctx.setLineDash([])
+  ctx.font = `bold ${7 / z}px Arial`
+  ctx.fillStyle = 'rgba(200, 30, 30, 0.55)'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  ctx.fillText('BLEED 3mm', 2 / z, 2 / z)
+  ctx.restore()
+}
+
 function drawUserGuides(
   ctx: CanvasRenderingContext2D,
   vt: number[],
@@ -302,6 +357,8 @@ export interface InitCanvasOptions {
   showGrid?: boolean
   gridSizeMm?: number
   userGuides?: UserGuide[]
+  showSafeZone?: boolean
+  bleedEnabled?: boolean
   onDimensions?: (info: DimensionInfo | null) => void
 }
 
@@ -346,6 +403,8 @@ export function initCanvas(
     showGrid: options?.showGrid ?? false,
     gridSizeMm: options?.gridSizeMm ?? 5,
     userGuides: options?.userGuides ?? [],
+    showSafeZone: options?.showSafeZone ?? true,
+    bleedEnabled: options?.bleedEnabled ?? true,
   }
 
   let activeGuides: GuideLineSpec[] = []
@@ -410,6 +469,8 @@ export function initCanvas(
     if ((data?.userGuides ?? []).length > 0) drawUserGuides(ctx, vt, pw, ph, data.userGuides ?? [])
     drawBindingEdge(ctx, vt, pw, ph, data?.bindingSide ?? 'bottom', data?.bindingType ?? 'none')
     drawPerforations(ctx, vt, pw, ph, data?.perforationLines ?? [])
+    if (data?.bleedEnabled) drawBleedIndicator(ctx, vt, pw, ph)
+    if (data?.showSafeZone) drawSafeZone(ctx, vt, pw, ph)
     if (activeGuides.length > 0) drawGuides(ctx, activeGuides, vt, pw, ph)
   })
 
