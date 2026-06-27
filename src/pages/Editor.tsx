@@ -197,7 +197,10 @@ export default function Editor() {
     ro.observe(area)
 
     requestAnimationFrame(() => {
-      if (area.offsetWidth > 0) fitToViewport(canvas, area.offsetWidth, area.offsetHeight)
+      requestAnimationFrame(() => {
+        const { offsetWidth: w, offsetHeight: h } = area
+        if (w > 0 && h > 0) fitToViewport(canvas, w, h)
+      })
     })
 
     return () => {
@@ -454,7 +457,7 @@ export default function Editor() {
   }
 
   return (
-    <main className="min-h-screen bg-krb-bg flex flex-col">
+    <main className="h-screen overflow-hidden bg-krb-bg flex flex-col">
       {/* Toolbar */}
       <header className="bg-white border-b border-krb-rule px-4 py-2 flex items-center gap-3 shrink-0">
         <button type="button" onClick={() => navigate('/dashboard')} className="text-krb-ink3 hover:text-krb-ink text-sm">← Dashboard</button>
